@@ -8,6 +8,8 @@ import { AppShell } from "./components/layout/AppShell.js";
 import { ProjectOverview } from "./components/project-overview/ProjectOverview.js";
 import { PhaseView } from "./components/task-board/PhaseView.js";
 import { ProgressBar } from "./components/task-board/ProgressBar.js";
+import { LoopStartPanel } from "./components/loop/LoopStartPanel.js";
+import { LoopSummary } from "./components/loop/LoopSummary.js";
 import { useOrchestrator } from "./hooks/useOrchestrator.js";
 import { useProject } from "./hooks/useProject.js";
 
@@ -45,7 +47,8 @@ function CopyBadge({ label, value }: { label: string; value: string }) {
   );
 }
 
-type View = "overview" | "tasks" | "trace" | "subagent-detail";
+type View = "overview" | "tasks" | "trace" | "subagent-detail" | "loop-start" | "loop-summary";
+type AppMode = "build" | "loop";
 
 export default function App() {
   const project = useProject();
@@ -53,6 +56,7 @@ export default function App() {
   const [currentView, setCurrentView] = useState<View>("overview");
   const [selectedSubagent, setSelectedSubagent] = useState<SubagentInfo | null>(null);
   const [, setTick] = useState(0);
+  const [appMode, setAppMode] = useState<AppMode>("build");
 
   // Tick every second while running so duration updates in realtime
   useEffect(() => {
@@ -95,6 +99,44 @@ export default function App() {
       }
     });
   });
+
+  // Auto-show loop summary when loop terminates
+  useEffect(() => {
+    if (orchestrator.loopTermination && !orchestrator.isRunning) {
+      setCurrentView("loop-summary");
+    }
+  }, [orchestrator.loopTermination, orchestrator.isRunning]);
+
+  // Auto-switch to trace view when loop is running and clarifying or in a stage
+  useEffect(() => {
+    if (orchestrator.isRunning && orchestrator.mode === "loop") {
+      if (orchestrator.isClarifying || orchestrator.currentStage) {
+        setCurrentView("trace");
+      }
+    }
+  }, [orchestrator.isRunning, orchestrator.mode, orchestrator.isClarifying, orchestrator.currentStage]);
+
+  const handleStartLoop = (loopConfig: {
+    description?: string;
+    descriptionFile?: string;
+    fullPlanPath?: string;
+    maxLoopCycles?: number;
+    maxBudgetUsd?: number;
+  }) => {
+    if (!project.projectDir) return;
+
+    const config: RunConfig = {
+      projectDir: project.projectDir,
+      specDir: "",
+      mode: "loop",
+      model: "claude-opus-4-6",
+      maxIterations: 50,
+      maxTurns: 75,
+      phases: "all",
+      ...loopConfig,
+    };
+    window.ralphAPI.startRun(config);
+  };
 
   const handleSelectSpec = (spec: string) => {
     project.selectSpec(spec);
@@ -252,17 +294,71 @@ export default function App() {
         <SubagentList subagents={orchestrator.subagents} isParentRunning={orchestrator.isRunning} onSubagentClick={handleSubagentBadgeClick} />
       </div>
     );
+  } else if (currentView === "loop-summary" && orchestrator.loopTermination) {
+    content = <LoopSummary termination={orchestrator.loopTermination} />;
+  } else if (currentView === "loop-start" || (currentView === "overview" && appMode === "loop" && !orchestrator.isRunning)) {
+    content = project.projectDir ? (
+      <LoopStartPanel
+        projectDir={project.projectDir}
+        isRunning={orchestrator.isRunning}
+        onStart={handleStartLoop}
+      />
+    ) : null;
   } else if (currentView === "overview" || !project.selectedSpec) {
     content = (
-      <ProjectOverview
-        specSummaries={project.specSummaries}
-        onSelectSpec={handleSelectSpec}
-        onStartSpec={handleStartSpec}
-        isRunning={orchestrator.isRunning}
-        activeSpecDir={orchestrator.activeSpecDir}
-        activePhase={orchestrator.currentPhase}
-        activeTask={orchestrator.activeTask}
-      />
+      <div>
+        {/* Mode selector */}
+        {project.projectDir && !orchestrator.isRunning && (
+          <div style={{
+            display: "flex",
+            gap: 2,
+            padding: "8px 16px",
+            borderBottom: "1px solid var(--border)",
+          }}>
+            <button
+              onClick={() => { setAppMode("build"); setCurrentView("overview"); }}
+              style={{
+                padding: "4px 12px",
+                borderRadius: "var(--radius)",
+                fontSize: "0.78rem",
+                fontWeight: 500,
+                background: appMode === "build" ? "var(--primary-muted)" : "transparent",
+                color: appMode === "build" ? "var(--primary)" : "var(--foreground-dim)",
+                border: "none",
+                cursor: "pointer",
+                transition: "background 0.15s, color 0.15s",
+              }}
+            >
+              Build
+            </button>
+            <button
+              onClick={() => { setAppMode("loop"); setCurrentView("loop-start"); }}
+              style={{
+                padding: "4px 12px",
+                borderRadius: "var(--radius)",
+                fontSize: "0.78rem",
+                fontWeight: 500,
+                background: appMode === "loop" ? "var(--primary-muted)" : "transparent",
+                color: appMode === "loop" ? "var(--primary)" : "var(--foreground-dim)",
+                border: "none",
+                cursor: "pointer",
+                transition: "background 0.15s, color 0.15s",
+              }}
+            >
+              Loop
+            </button>
+          </div>
+        )}
+        <ProjectOverview
+          specSummaries={project.specSummaries}
+          onSelectSpec={handleSelectSpec}
+          onStartSpec={handleStartSpec}
+          isRunning={orchestrator.isRunning}
+          activeSpecDir={orchestrator.activeSpecDir}
+          activePhase={orchestrator.currentPhase}
+          activeTask={orchestrator.activeTask}
+        />
+      </div>
     );
   } else {
     content = (
@@ -322,6 +418,11 @@ export default function App() {
       onDeselectSpec={handleDeselectSpec}
       onStart={handleStart}
       onStop={() => window.ralphAPI.stopRun()}
+      mode={orchestrator.mode}
+      currentCycle={orchestrator.currentCycle}
+      currentStage={orchestrator.currentStage}
+      isClarifying={orchestrator.isClarifying}
+      totalCost={orchestrator.totalCost}
       content={content}
     />
   );

@@ -10,7 +10,7 @@ import type {
   SubagentInfo,
   Task,
 } from "./types.js";
-import { parseTasksFile, derivePhaseStatus, extractTaskIds } from "./parser.js";
+import { parseTasksFile, derivePhaseStatus, extractTaskIds, parseGapAnalysisResult, discoverNewSpecDir } from "./parser.js";
 import {
   initDatabase,
   createRun,
@@ -20,12 +20,36 @@ import {
   insertStep,
   insertSubagent,
   completeSubagent,
+  insertLoopCycle,
+  updateLoopCycle,
+  upsertFailureRecord,
+  getFailureRecord,
+  updateRunLoopsCompleted,
 } from "./database.js";
 import {
   getCurrentBranch,
   createBranch,
   createPullRequest,
+  createLoopPullRequest,
 } from "./git.js";
+import {
+  buildClarificationPrompt,
+  buildGapAnalysisPrompt,
+  buildConstitutionPrompt,
+  buildSpecifyPrompt,
+  buildLoopPlanPrompt,
+  buildLoopTasksPrompt,
+  buildImplementPrompt,
+  buildVerifyPrompt,
+  buildLearningsPrompt,
+} from "./prompts.js";
+import type {
+  LoopStageType,
+  GapAnalysisDecision,
+  FailureRecord,
+  LoopTermination,
+  TerminationReason,
+} from "./types.js";
 
 // ── Logging ──
 
@@ -121,6 +145,11 @@ interface RunState {
   phaseTraceId: string;
   phaseNumber: number;
   phaseName: string;
+  // Loop-mode fields
+  currentCycle?: number;
+  currentStage?: LoopStageType;
+  isClarifying?: boolean;
+  loopsCompleted?: number;
 }
 
 let currentRunState: RunState | null = null;
@@ -743,13 +772,361 @@ async function runPhase(
   return { cost: totalCost, durationMs, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
 }
 
-// ── Main Loop ──
+// ── Stage Runner (lightweight query() wrapper for loop stages) ──
+
+async function runStage(
+  config: RunConfig,
+  prompt: string,
+  emit: EmitFn,
+  rlog: RunLogger,
+  runId: string,
+  cycleNumber: number,
+  stageType: import("./types.js").LoopStageType,
+  specDir?: string
+): Promise<{ result: string; cost: number; durationMs: number; inputTokens: number; outputTokens: number }> {
+  const startTime = Date.now();
+  let stepIndex = 0;
+  let totalCost = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let resultText = "";
+  const knownSubagentIds = new Set<string>();
+
+  // Create a phase trace for this stage so steps are persisted
+  const phaseTraceId = crypto.randomUUID();
+  createPhaseTrace({
+    id: phaseTraceId,
+    runId,
+    specDir: specDir ?? "",
+    phaseNumber: cycleNumber,
+    phaseName: `loop:${stageType}`,
+  });
+
+  rlog.phase("INFO", `runStage: ${stageType} for cycle ${cycleNumber}`);
+
+  const emitAndStore = (step: AgentStep) => {
+    const enriched: AgentStep = {
+      ...step,
+      metadata: {
+        ...step.metadata,
+        costUsd: totalCost || null,
+        inputTokens: totalInputTokens || null,
+        outputTokens: totalOutputTokens || null,
+      },
+    };
+    emit({ type: "agent_step", step: enriched });
+    insertStep({ ...enriched, phaseTraceId });
+  };
+
+  emitAndStore(makeStep("user_message", stepIndex++, prompt));
+
+  emit({
+    type: "stage_started",
+    runId,
+    cycleNumber,
+    stage: stageType,
+    specDir,
+  });
+
+  const isAborted = () => abortController?.signal.aborted ?? false;
+
+  const { query } = await import("@anthropic-ai/claude-agent-sdk");
+
+  for await (const msg of query({
+    prompt,
+    options: {
+      model: config.model,
+      cwd: config.projectDir,
+      maxTurns: config.maxTurns,
+      permissionMode: "bypassPermissions",
+      settingSources: ["project"],
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: undefined,
+            hooks: [
+              async (input: Record<string, unknown>) => {
+                const toolName = String(input.tool_name ?? "unknown");
+                rlog.phase("DEBUG", `runStage PreToolUse: ${toolName}`);
+
+                if (toolName === "Skill") {
+                  const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
+                  emitAndStore(
+                    makeStep("skill_invoke", stepIndex++, null, {
+                      skillName: toolInput.skill ?? "",
+                      skillArgs: toolInput.args ?? "",
+                      toolUseId: input.tool_use_id ?? null,
+                    })
+                  );
+                } else {
+                  emitAndStore(toToolCallStep(input, stepIndex++));
+                }
+
+                if (isAborted()) {
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: "PreToolUse",
+                      permissionDecision: "deny",
+                      permissionDecisionReason: "Run stopped by user",
+                    },
+                  };
+                }
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: "PreToolUse",
+                    permissionDecision: "allow",
+                  },
+                };
+              },
+            ],
+          },
+        ],
+        PostToolUse: [
+          {
+            matcher: undefined,
+            hooks: [
+              async (input: Record<string, unknown>) => {
+                const toolName = String(input.tool_name ?? "unknown");
+                if (toolName === "Skill") {
+                  const response = input.tool_response ?? input.tool_result ?? "";
+                  emitAndStore(
+                    makeStep("skill_result", stepIndex++, stringifyResponse(response), {
+                      toolUseId: input.tool_use_id ?? null,
+                    })
+                  );
+                } else {
+                  emitAndStore(toToolResultStep(input, stepIndex++));
+                }
+                return { hookSpecificOutput: { hookEventName: "PostToolUse" } };
+              },
+            ],
+          },
+        ],
+        SubagentStart: [
+          {
+            matcher: undefined,
+            hooks: [
+              async (input: Record<string, unknown>) => {
+                const info = toSubagentInfo(input);
+                knownSubagentIds.add(info.subagentId);
+                emit({ type: "subagent_started", info });
+                insertSubagent({ ...info, phaseTraceId });
+                emitAndStore(
+                  makeStep("subagent_spawn", stepIndex++, null, {
+                    subagentId: info.subagentId,
+                    subagentType: info.subagentType,
+                    description: info.description,
+                  })
+                );
+                return {};
+              },
+            ],
+          },
+        ],
+        SubagentStop: [
+          {
+            matcher: undefined,
+            hooks: [
+              async (input: Record<string, unknown>) => {
+                const subagentId = String(input.subagent_id ?? input.agent_id ?? "unknown");
+                if (!knownSubagentIds.has(subagentId)) return {};
+                emit({ type: "subagent_completed", subagentId });
+                completeSubagent(subagentId);
+                emitAndStore(
+                  makeStep("subagent_result", stepIndex++, null, { subagentId })
+                );
+                return {};
+              },
+            ],
+          },
+        ],
+      },
+    },
+  })) {
+    if (isAborted()) break;
+
+    const message = msg as Record<string, unknown>;
+
+    if (message.type === "assistant") {
+      const innerMsg = message.message as Record<string, unknown> | undefined;
+      const content = innerMsg?.content as Array<Record<string, unknown>> | undefined;
+      const usage = (innerMsg?.usage ?? message.usage) as Record<string, unknown> | undefined;
+      if (usage) {
+        if (typeof usage.input_tokens === "number") totalInputTokens += usage.input_tokens;
+        if (typeof usage.output_tokens === "number") totalOutputTokens += usage.output_tokens;
+        totalCost = estimateCost(config.model, totalInputTokens, totalOutputTokens);
+      }
+      if (content) {
+        for (const block of content) {
+          if (block.type === "text" && typeof block.text === "string") {
+            emitAndStore(makeStep("text", stepIndex++, block.text));
+          }
+          if (block.type === "thinking" && typeof block.thinking === "string") {
+            emitAndStore(makeStep("thinking", stepIndex++, block.thinking));
+          }
+        }
+      }
+    }
+
+    if (message.type === "result") {
+      if (typeof message.total_cost_usd === "number") totalCost = message.total_cost_usd;
+      const resultUsage = message.usage as Record<string, unknown> | undefined;
+      if (resultUsage) {
+        if (typeof resultUsage.input_tokens === "number") totalInputTokens = resultUsage.input_tokens;
+        if (typeof resultUsage.output_tokens === "number") totalOutputTokens = resultUsage.output_tokens;
+      }
+      if (typeof message.result === "string") resultText = message.result;
+      rlog.phase("INFO", `runStage: ${stageType} result received`, {
+        cost: totalCost,
+        resultPreview: resultText.slice(0, 200),
+      });
+    }
+  }
+
+  const durationMs = Date.now() - startTime;
+
+  completePhaseTrace(phaseTraceId, "completed", totalCost, durationMs, totalInputTokens || undefined, totalOutputTokens || undefined);
+
+  emit({
+    type: "stage_completed",
+    runId,
+    cycleNumber,
+    stage: stageType,
+    costUsd: totalCost,
+    durationMs,
+  });
+
+  return { result: resultText, cost: totalCost, durationMs, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+}
+
+// ── Build Mode Runner (extracted from run()) ──
+
+async function runBuild(
+  config: RunConfig,
+  emit: EmitFn,
+  runId: string,
+  rlog: RunLogger
+): Promise<{ phasesCompleted: number; totalCost: number }> {
+  let phasesCompleted = 0;
+  let totalCost = 0;
+  const runStart = Date.now();
+
+  // Determine which specs to process
+  const specDirs = config.runAllSpecs
+    ? listSpecDirs(config.projectDir).filter(
+        (s) => !isSpecComplete(config.projectDir, s)
+      )
+    : [config.specDir];
+
+  if (specDirs.length === 0) {
+    rlog.run("INFO", "runBuild: no unfinished specs found");
+    return { phasesCompleted, totalCost };
+  }
+
+  rlog.run("INFO", `runBuild: will process ${specDirs.length} spec(s)`, { specDirs });
+
+  for (const specDir of specDirs) {
+    if (abortController?.signal.aborted) break;
+
+    const specConfig = { ...config, specDir };
+
+    emit({ type: "spec_started", specDir });
+    if (currentRunState) currentRunState.specDir = specDir;
+    rlog.run("INFO", `runBuild: starting spec ${specDir}`);
+
+    const initialPhases = parseTasksFile(config.projectDir, specDir);
+    const runTaskState = new RunTaskState(initialPhases);
+
+    let iteration = 0;
+    let specFailed = false;
+
+    while (iteration < config.maxIterations) {
+      if (abortController?.signal.aborted) break;
+
+      const targetPhases = runTaskState.getIncompletePhases(config.phases);
+
+      const phase = targetPhases[0];
+      if (!phase) break;
+
+      const phaseTraceId = crypto.randomUUID();
+      createPhaseTrace({
+        id: phaseTraceId,
+        runId,
+        specDir,
+        phaseNumber: phase.number,
+        phaseName: phase.name,
+      });
+
+      rlog.startPhase(phase.number, phase.name, phaseTraceId);
+      if (currentRunState) {
+        currentRunState.phaseTraceId = phaseTraceId;
+        currentRunState.phaseNumber = phase.number;
+        currentRunState.phaseName = phase.name;
+      }
+      emit({ type: "phase_started", phase, iteration, phaseTraceId });
+      emit({ type: "tasks_updated", phases: runTaskState.getPhases() });
+
+      try {
+        const result = await runPhase(specConfig, phase, phaseTraceId, emit, rlog, runTaskState);
+
+        completePhaseTrace(
+          phaseTraceId,
+          "completed",
+          result.cost,
+          result.durationMs,
+          result.inputTokens || undefined,
+          result.outputTokens || undefined
+        );
+
+        phasesCompleted++;
+        totalCost += result.cost;
+
+        const freshPhases = parseTasksFile(config.projectDir, specDir);
+        const reconciledPhases = runTaskState.reconcileFromDisk(freshPhases);
+        emit({ type: "tasks_updated", phases: reconciledPhases });
+
+        emit({
+          type: "phase_completed",
+          phase: { ...phase, status: "complete" },
+          cost: result.cost,
+          durationMs: result.durationMs,
+        });
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        rlog.phase("ERROR", `Phase ${phase.number} failed: ${message}`, { stack });
+        rlog.run("ERROR", `Phase ${phase.number} failed: ${message}`);
+        completePhaseTrace(phaseTraceId, "failed", 0, Date.now() - runStart);
+        emit({
+          type: "error",
+          message: `Phase ${phase.number} failed: ${message}`,
+          phaseNumber: phase.number,
+        });
+        specFailed = true;
+        break;
+      }
+
+      iteration++;
+    }
+
+    if (!specFailed && !abortController?.signal.aborted) {
+      rlog.run("INFO", `runBuild: spec ${specDir} completed`);
+      emit({ type: "spec_completed", specDir, phasesCompleted });
+    }
+
+    if (specFailed) break;
+  }
+
+  return { phasesCompleted, totalCost };
+}
+
+// ── Main Entry Point ──
 
 export async function run(config: RunConfig, emit: EmitFn): Promise<void> {
   initDatabase();
   abortController = new AbortController();
 
-  // Create a dedicated branch for this run
   const baseBranch = getCurrentBranch(config.projectDir);
   const branchName = createBranch(config.projectDir, config.mode);
 
@@ -784,120 +1161,14 @@ export async function run(config: RunConfig, emit: EmitFn): Promise<void> {
   const runStart = Date.now();
 
   try {
-    // Determine which specs to process
-    const specDirs = config.runAllSpecs
-      ? listSpecDirs(config.projectDir).filter(
-          (s) => !isSpecComplete(config.projectDir, s)
-        )
-      : [config.specDir];
-
-    if (specDirs.length === 0) {
-      rlog.run("INFO", "run: no unfinished specs found");
-      return;
-    }
-
-    rlog.run("INFO", `run: will process ${specDirs.length} spec(s)`, { specDirs });
-
-    for (const specDir of specDirs) {
-      if (abortController.signal.aborted) break;
-
-      // Update the config's specDir for the current spec
-      const specConfig = { ...config, specDir };
-
-      emit({ type: "spec_started", specDir });
-      if (currentRunState) currentRunState.specDir = specDir;
-      rlog.run("INFO", `run: starting spec ${specDir}`);
-
-      // Initialize in-memory task state once per spec. Updated via two paths:
-      // 1. TodoWrite detection (PostToolUse hook) — real-time during phase
-      // 2. Disk reconciliation (after each phase) — catches Edit tool changes
-      const initialPhases = parseTasksFile(config.projectDir, specDir);
-      const runTaskState = new RunTaskState(initialPhases);
-
-      let iteration = 0;
-      let specFailed = false;
-
-      while (iteration < config.maxIterations) {
-        if (abortController.signal.aborted) break;
-
-        const targetPhases = runTaskState.getIncompletePhases(config.phases);
-
-        const phase = targetPhases[0];
-        if (!phase) break; // all target phases complete for this spec
-
-        const phaseTraceId = crypto.randomUUID();
-        createPhaseTrace({
-          id: phaseTraceId,
-          runId,
-          specDir,
-          phaseNumber: phase.number,
-          phaseName: phase.name,
-        });
-
-        rlog.startPhase(phase.number, phase.name, phaseTraceId);
-        if (currentRunState) {
-          currentRunState.phaseTraceId = phaseTraceId;
-          currentRunState.phaseNumber = phase.number;
-          currentRunState.phaseName = phase.name;
-        }
-        emit({ type: "phase_started", phase, iteration, phaseTraceId });
-        emit({ type: "tasks_updated", phases: runTaskState.getPhases() });
-
-        try {
-          const result = await runPhase(specConfig, phase, phaseTraceId, emit, rlog, runTaskState);
-
-          completePhaseTrace(
-            phaseTraceId,
-            "completed",
-            result.cost,
-            result.durationMs,
-            result.inputTokens || undefined,
-            result.outputTokens || undefined
-          );
-
-          phasesCompleted++;
-          totalCost += result.cost;
-
-          // Reconcile in-memory state with disk — the agent marks tasks [x]
-          // by editing tasks.md directly (Edit tool), not just via TodoWrite.
-          // Without this, getIncompletePhases() would re-run completed phases.
-          const freshPhases = parseTasksFile(config.projectDir, specDir);
-          const reconciledPhases = runTaskState.reconcileFromDisk(freshPhases);
-          emit({ type: "tasks_updated", phases: reconciledPhases });
-
-          emit({
-            type: "phase_completed",
-            phase: { ...phase, status: "complete" },
-            cost: result.cost,
-            durationMs: result.durationMs,
-          });
-        } catch (err: unknown) {
-          const message =
-            err instanceof Error ? err.message : String(err);
-          const stack = err instanceof Error ? err.stack : undefined;
-          rlog.phase("ERROR", `Phase ${phase.number} failed: ${message}`, { stack });
-          rlog.run("ERROR", `Phase ${phase.number} failed: ${message}`);
-          completePhaseTrace(phaseTraceId, "failed", 0, Date.now() - runStart);
-          emit({
-            type: "error",
-            message: `Phase ${phase.number} failed: ${message}`,
-            phaseNumber: phase.number,
-          });
-          // Stop the run — phases are sequential and depend on each other
-          specFailed = true;
-          break;
-        }
-
-        iteration++;
-      }
-
-      if (!specFailed && !abortController.signal.aborted) {
-        rlog.run("INFO", `run: spec ${specDir} completed`);
-        emit({ type: "spec_completed", specDir, phasesCompleted });
-      }
-
-      // If a spec failed, stop processing further specs
-      if (specFailed) break;
+    if (config.mode === "loop") {
+      const result = await runLoop(config, emit, runId, rlog);
+      phasesCompleted = result.phasesCompleted;
+      totalCost = result.totalCost;
+    } else {
+      const result = await runBuild(config, emit, runId, rlog);
+      phasesCompleted = result.phasesCompleted;
+      totalCost = result.totalCost;
     }
   } finally {
     const wasStopped = abortController?.signal.aborted ?? false;
@@ -908,7 +1179,6 @@ export async function run(config: RunConfig, emit: EmitFn): Promise<void> {
     const finalStatus = wasStopped ? "stopped" : "completed";
     completeRun(runId, finalStatus, totalCost, totalDuration, phasesCompleted);
 
-    // Create a PR if the run completed successfully with work done
     let prUrl: string | null = null;
     if (!wasStopped && phasesCompleted > 0) {
       rlog.run("INFO", `run: creating PR for branch ${branchName}`);
@@ -933,6 +1203,410 @@ export async function run(config: RunConfig, emit: EmitFn): Promise<void> {
       prUrl,
     });
   }
+}
+
+// ── Loop Mode Runner ──
+
+async function runLoop(
+  config: RunConfig,
+  emit: EmitFn,
+  runId: string,
+  rlog: RunLogger
+): Promise<{ phasesCompleted: number; totalCost: number }> {
+  // Validate: loop mode requires at least one input source
+  if (!config.description && !config.descriptionFile && !config.fullPlanPath) {
+    throw new Error("Loop mode requires at least one of: description, descriptionFile, or fullPlanPath");
+  }
+
+  let fullPlanPath = config.fullPlanPath ?? "";
+  let cumulativeCost = 0;
+  let cyclesCompleted = 0;
+  const featuresCompleted: string[] = [];
+  const featuresSkipped: string[] = [];
+  const failureTracker = new Map<string, FailureRecord>();
+
+  // Load existing failure records from SQLite for crash recovery
+  const loadFailureRecords = () => {
+    for (const [, record] of failureTracker) {
+      const dbRecord = getFailureRecord(runId, record.specDir);
+      if (dbRecord) {
+        record.implFailures = dbRecord.impl_failures;
+        record.replanFailures = dbRecord.replan_failures;
+      }
+    }
+  };
+
+  const getOrCreateFailureRecord = (specDir: string): FailureRecord => {
+    let record = failureTracker.get(specDir);
+    if (!record) {
+      record = { specDir, implFailures: 0, replanFailures: 0 };
+      failureTracker.set(specDir, record);
+    }
+    return record;
+  };
+
+  const persistFailure = (specDir: string) => {
+    const record = getOrCreateFailureRecord(specDir);
+    upsertFailureRecord(runId, specDir, record.implFailures, record.replanFailures);
+  };
+
+  // ── Phase A: Clarification (T022) ──
+  if (!fullPlanPath) {
+    const description = config.description
+      ?? (config.descriptionFile ? fs.readFileSync(config.descriptionFile, "utf-8") : "");
+
+    emit({ type: "clarification_started", runId });
+    rlog.run("INFO", "runLoop: starting clarification (Phase A)");
+
+    if (currentRunState) {
+      currentRunState.isClarifying = true;
+    }
+
+    const prompt = buildClarificationPrompt(description);
+    const result = await runStage(config, prompt, emit, rlog, runId, 0, "clarification");
+    cumulativeCost += result.cost;
+
+    // Extract full_plan.md path from the result
+    const planPathMatch = result.result.match(/\.specify\/full_plan\.md/);
+    fullPlanPath = planPathMatch
+      ? path.join(config.projectDir, ".specify/full_plan.md")
+      : path.join(config.projectDir, ".specify/full_plan.md");
+
+    if (!fs.existsSync(fullPlanPath)) {
+      throw new Error(`Clarification completed but full_plan.md not found at ${fullPlanPath}`);
+    }
+
+    emit({ type: "clarification_completed", runId, fullPlanPath });
+    rlog.run("INFO", `runLoop: clarification completed, fullPlanPath=${fullPlanPath}`);
+
+    if (currentRunState) {
+      currentRunState.isClarifying = false;
+    }
+  }
+
+  // ── Pre-loop: Constitution check (T028) ──
+  const constitutionPath = path.join(config.projectDir, ".specify", "memory", "constitution.md");
+  if (!fs.existsSync(constitutionPath)) {
+    rlog.run("INFO", "runLoop: constitution not found, generating");
+    const prompt = buildConstitutionPrompt(config, fullPlanPath);
+    const result = await runStage(config, prompt, emit, rlog, runId, 0, "constitution");
+    cumulativeCost += result.cost;
+  } else {
+    rlog.run("INFO", "runLoop: constitution already exists, skipping");
+  }
+
+  // ── Phase B: Autonomous Loop ──
+  loadFailureRecords();
+
+  while (true) {
+    // Check abort
+    if (abortController?.signal.aborted) {
+      rlog.run("INFO", "runLoop: abort detected");
+      break;
+    }
+
+    // Check max cycles
+    if (config.maxLoopCycles && cyclesCompleted >= config.maxLoopCycles) {
+      rlog.run("INFO", `runLoop: max cycles reached (${config.maxLoopCycles})`);
+      break;
+    }
+
+    // Check budget
+    if (config.maxBudgetUsd && cumulativeCost >= config.maxBudgetUsd) {
+      rlog.run("INFO", `runLoop: budget exceeded ($${cumulativeCost.toFixed(2)} >= $${config.maxBudgetUsd})`);
+      break;
+    }
+
+    const cycleNumber = cyclesCompleted + 1;
+    const cycleId = crypto.randomUUID();
+    const cycleStart = Date.now();
+
+    emit({ type: "loop_cycle_started", runId, cycleNumber });
+    rlog.run("INFO", `runLoop: starting cycle ${cycleNumber}`);
+
+    if (currentRunState) {
+      currentRunState.currentCycle = cycleNumber;
+    }
+
+    // ── Gap Analysis (T029) ──
+    let decision: GapAnalysisDecision;
+    try {
+      const existingSpecs = listSpecDirs(config.projectDir);
+      const prompt = buildGapAnalysisPrompt(config, fullPlanPath, existingSpecs);
+
+      if (currentRunState) {
+        currentRunState.currentStage = "gap_analysis";
+      }
+
+      const gapResult = await runStage(config, prompt, emit, rlog, runId, cycleNumber, "gap_analysis");
+      cumulativeCost += gapResult.cost;
+      decision = parseGapAnalysisResult(gapResult.result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      rlog.run("ERROR", `runLoop: gap analysis failed: ${msg}`);
+      emit({ type: "error", message: `Gap analysis failed: ${msg}` });
+      break;
+    }
+
+    // Record the cycle
+    const decisionType = decision.type;
+    const featureName = decision.type === "NEXT_FEATURE" ? decision.name : null;
+    let specDir = decision.type === "RESUME_FEATURE" || decision.type === "REPLAN_FEATURE"
+      ? decision.specDir
+      : null;
+
+    insertLoopCycle({
+      id: cycleId,
+      runId,
+      cycleNumber,
+      featureName,
+      specDir,
+      decision: decisionType,
+    });
+
+    // ── GAPS_COMPLETE → terminate ──
+    if (decision.type === "GAPS_COMPLETE") {
+      rlog.run("INFO", "runLoop: all gaps complete");
+      updateLoopCycle(cycleId, "completed", 0, Date.now() - cycleStart);
+      emit({
+        type: "loop_cycle_completed",
+        runId,
+        cycleNumber,
+        decision: decisionType,
+        featureName: null,
+        specDir: null,
+        costUsd: 0,
+      });
+      break;
+    }
+
+    // ── Failure threshold checks (T038) ──
+    if (specDir) {
+      const record = getOrCreateFailureRecord(specDir);
+      if (record.replanFailures >= 3) {
+        rlog.run("WARN", `runLoop: skipping feature at ${specDir} — 3 replan failures`);
+        featuresSkipped.push(specDir);
+        updateLoopCycle(cycleId, "skipped", 0, Date.now() - cycleStart);
+        emit({
+          type: "loop_cycle_completed",
+          runId,
+          cycleNumber,
+          decision: "skipped",
+          featureName,
+          specDir,
+          costUsd: 0,
+        });
+        cyclesCompleted++;
+        updateRunLoopsCompleted(runId, cyclesCompleted);
+        continue;
+      }
+      if (record.implFailures >= 3) {
+        // Force replan
+        decision = { type: "REPLAN_FEATURE", specDir };
+        rlog.run("WARN", `runLoop: forcing replan for ${specDir} — 3 impl failures`);
+      }
+    }
+
+    let cycleCost = 0;
+
+    try {
+      // ── NEXT_FEATURE: specify → plan → tasks → implement → verify → learnings ──
+      if (decision.type === "NEXT_FEATURE") {
+        // Specify (T030)
+        if (currentRunState) {
+          currentRunState.currentStage = "specify";
+        }
+        const knownSpecs = listSpecDirs(config.projectDir);
+        const specifyPrompt = buildSpecifyPrompt(config, decision.name, decision.description);
+        const specifyResult = await runStage(config, specifyPrompt, emit, rlog, runId, cycleNumber, "specify");
+        cycleCost += specifyResult.cost;
+
+        // Discover the newly created spec directory
+        specDir = discoverNewSpecDir(config.projectDir, knownSpecs);
+        if (!specDir) {
+          throw new Error("Specify completed but no new spec directory was created");
+        }
+        rlog.run("INFO", `runLoop: new spec directory: ${specDir}`);
+      }
+
+      // Plan (T031) — for NEXT_FEATURE and REPLAN_FEATURE
+      if (decision.type === "NEXT_FEATURE" || decision.type === "REPLAN_FEATURE") {
+        const targetSpecDir = specDir!;
+        const specPath = targetSpecDir.startsWith("/")
+          ? targetSpecDir
+          : path.join(config.projectDir, targetSpecDir);
+
+        if (currentRunState) {
+          currentRunState.currentStage = "plan";
+        }
+        const planPrompt = buildLoopPlanPrompt(config, specPath);
+        const planResult = await runStage(config, planPrompt, emit, rlog, runId, cycleNumber, "plan", targetSpecDir);
+        cycleCost += planResult.cost;
+
+        // Tasks (T031)
+        if (currentRunState) {
+          currentRunState.currentStage = "tasks";
+        }
+        const tasksPrompt = buildLoopTasksPrompt(config, specPath);
+        const tasksResult = await runStage(config, tasksPrompt, emit, rlog, runId, cycleNumber, "tasks", targetSpecDir);
+        cycleCost += tasksResult.cost;
+      }
+
+      // Implement (T032)
+      const implSpecDir = specDir!;
+      const implSpecPath = implSpecDir.startsWith("/")
+        ? implSpecDir
+        : path.join(config.projectDir, implSpecDir);
+
+      if (currentRunState) {
+        currentRunState.currentStage = "implement";
+        if (currentRunState) currentRunState.specDir = implSpecDir;
+      }
+
+      // Parse tasks.md to get phases, then run each phase
+      const phases = parseTasksFile(config.projectDir, implSpecDir);
+      const implConfig = { ...config, specDir: implSpecDir };
+
+      for (const phase of phases) {
+        if (abortController?.signal.aborted) break;
+        if (phase.status === "complete") continue;
+
+        const runTaskState = new RunTaskState(phases);
+        const phaseTraceId = crypto.randomUUID();
+        createPhaseTrace({
+          id: phaseTraceId,
+          runId,
+          specDir: implSpecDir,
+          phaseNumber: phase.number,
+          phaseName: phase.name,
+        });
+
+        if (currentRunState) {
+          currentRunState.phaseTraceId = phaseTraceId;
+          currentRunState.phaseNumber = phase.number;
+          currentRunState.phaseName = phase.name;
+        }
+
+        emit({ type: "phase_started", phase, iteration: 0, phaseTraceId });
+
+        const phaseResult = await runPhase(implConfig, phase, phaseTraceId, emit, rlog, runTaskState);
+        completePhaseTrace(
+          phaseTraceId,
+          "completed",
+          phaseResult.cost,
+          phaseResult.durationMs,
+          phaseResult.inputTokens || undefined,
+          phaseResult.outputTokens || undefined
+        );
+        cycleCost += phaseResult.cost;
+
+        // Reconcile task state from disk
+        const freshPhases = parseTasksFile(config.projectDir, implSpecDir);
+        runTaskState.reconcileFromDisk(freshPhases);
+        emit({ type: "tasks_updated", phases: runTaskState.getPhases() });
+        emit({
+          type: "phase_completed",
+          phase: { ...phase, status: "complete" },
+          cost: phaseResult.cost,
+          durationMs: phaseResult.durationMs,
+        });
+      }
+
+      // Verify (T033)
+      if (currentRunState) {
+        currentRunState.currentStage = "verify";
+      }
+      const verifyPrompt = buildVerifyPrompt(config, implSpecPath, fullPlanPath);
+      const verifyResult = await runStage(config, verifyPrompt, emit, rlog, runId, cycleNumber, "verify", implSpecDir);
+      cycleCost += verifyResult.cost;
+
+      // Learnings (T034)
+      if (currentRunState) {
+        currentRunState.currentStage = "learnings";
+      }
+      const learningsPrompt = buildLearningsPrompt(config, implSpecPath);
+      const learningsResult = await runStage(config, learningsPrompt, emit, rlog, runId, cycleNumber, "learnings", implSpecDir);
+      cycleCost += learningsResult.cost;
+
+      // Success — reset failure counters
+      if (implSpecDir) {
+        const record = getOrCreateFailureRecord(implSpecDir);
+        record.implFailures = 0;
+        record.replanFailures = 0;
+        persistFailure(implSpecDir);
+      }
+
+      featuresCompleted.push(featureName ?? implSpecDir);
+
+    } catch (err) {
+      // ── Stage failure handling (T040) ──
+      const msg = err instanceof Error ? err.message : String(err);
+      rlog.run("ERROR", `runLoop: cycle ${cycleNumber} failed: ${msg}`);
+
+      if (specDir) {
+        const record = getOrCreateFailureRecord(specDir);
+        // Determine which counter to increment based on the current stage
+        const currentStage = currentRunState?.currentStage;
+        if (currentStage === "plan" || currentStage === "tasks") {
+          record.replanFailures++;
+        } else {
+          record.implFailures++;
+        }
+        persistFailure(specDir);
+      }
+
+      emit({ type: "error", message: `Cycle ${cycleNumber} failed: ${msg}` });
+    }
+
+    cumulativeCost += cycleCost;
+    cyclesCompleted++;
+
+    updateLoopCycle(cycleId, "completed", cycleCost, Date.now() - cycleStart);
+    updateRunLoopsCompleted(runId, cyclesCompleted);
+
+    if (currentRunState) {
+      currentRunState.loopsCompleted = cyclesCompleted;
+    }
+
+    emit({
+      type: "loop_cycle_completed",
+      runId,
+      cycleNumber,
+      decision: decisionType,
+      featureName,
+      specDir,
+      costUsd: cycleCost,
+    });
+
+    // Check termination conditions after cycle
+    if (abortController?.signal.aborted) break;
+    if (config.maxBudgetUsd && cumulativeCost >= config.maxBudgetUsd) break;
+    if (config.maxLoopCycles && cyclesCompleted >= config.maxLoopCycles) break;
+  }
+
+  // ── Termination (T042) ──
+  let terminationReason: TerminationReason = "gaps_complete";
+  if (abortController?.signal.aborted) {
+    terminationReason = "user_abort";
+  } else if (config.maxBudgetUsd && cumulativeCost >= config.maxBudgetUsd) {
+    terminationReason = "budget_exceeded";
+  } else if (config.maxLoopCycles && cyclesCompleted >= config.maxLoopCycles) {
+    terminationReason = "max_cycles_reached";
+  }
+
+  const termination: LoopTermination = {
+    reason: terminationReason,
+    cyclesCompleted,
+    totalCostUsd: cumulativeCost,
+    totalDurationMs: 0, // Will be set by caller
+    featuresCompleted,
+    featuresSkipped,
+  };
+
+  emit({ type: "loop_terminated", runId, termination });
+  rlog.run("INFO", `runLoop: terminated — reason=${terminationReason}, cycles=${cyclesCompleted}, features=${featuresCompleted.length}/${featuresSkipped.length}`);
+
+  return { phasesCompleted: cyclesCompleted, totalCost: cumulativeCost };
 }
 
 export function stopRun(): void {

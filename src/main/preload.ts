@@ -21,6 +21,10 @@ contextBridge.exposeInMainWorld("ralphAPI", {
     phaseTraceId: string;
     phaseNumber: number;
     phaseName: string;
+    currentCycle?: number;
+    currentStage?: string;
+    isClarifying?: boolean;
+    loopsCompleted?: number;
   } | null>,
 
   // Orchestrator events

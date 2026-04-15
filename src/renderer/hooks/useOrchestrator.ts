@@ -5,6 +5,8 @@ import type {
   Phase,
   Task,
   OrchestratorEvent,
+  LoopStageType,
+  LoopTermination,
 } from "../../core/types.js";
 
 export interface OrchestratorHook {
@@ -20,6 +22,12 @@ export interface OrchestratorHook {
   phasesCompleted: number;
   currentRunId: string | null;
   currentPhaseTraceId: string | null;
+  // Loop-mode state
+  mode: string | null;
+  currentCycle: number | null;
+  currentStage: LoopStageType | null;
+  isClarifying: boolean;
+  loopTermination: LoopTermination | null;
   loadPhaseTrace: (projectDir: string, specDir: string, phase: Phase) => Promise<boolean>;
   switchToLive: () => Promise<void>;
   onPhaseCompleted: (cb: () => void) => void;
@@ -39,6 +47,11 @@ export function useOrchestrator(): OrchestratorHook {
   const [activeSpecDir, setActiveSpecDir] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [viewingHistorical, setViewingHistorical] = useState(false);
+  const [mode, setMode] = useState<string | null>(null);
+  const [currentCycle, setCurrentCycle] = useState<number | null>(null);
+  const [currentStage, setCurrentStage] = useState<LoopStageType | null>(null);
+  const [isClarifying, setIsClarifying] = useState(false);
+  const [loopTermination, setLoopTermination] = useState<LoopTermination | null>(null);
   const viewingHistoricalRef = useRef(false);
   const phaseCompletedCb = useRef<(() => void) | null>(null);
   const tasksUpdatedCb = useRef<((phases: Phase[]) => void) | null>(null);
@@ -117,6 +130,11 @@ export function useOrchestrator(): OrchestratorHook {
             setPhasesCompleted(0);
             setCurrentRunId(event.runId);
             setActiveSpecDir(event.config.specDir);
+            setMode(event.config.mode);
+            setCurrentCycle(null);
+            setCurrentStage(null);
+            setIsClarifying(false);
+            setLoopTermination(null);
             break;
 
           case "spec_started":
@@ -199,9 +217,46 @@ export function useOrchestrator(): OrchestratorHook {
             setTotalCost(event.totalCost);
             setTotalDuration(event.totalDuration);
             setPhasesCompleted(event.phasesCompleted);
+            setCurrentCycle(null);
+            setCurrentStage(null);
+            setIsClarifying(false);
             break;
 
           case "error":
+            break;
+
+          // Loop mode events
+          case "clarification_started":
+            setIsClarifying(true);
+            break;
+
+          case "clarification_question":
+            // Questions are handled via agent_step events in the trace
+            break;
+
+          case "clarification_completed":
+            setIsClarifying(false);
+            break;
+
+          case "loop_cycle_started":
+            setCurrentCycle(event.cycleNumber);
+            break;
+
+          case "loop_cycle_completed":
+            break;
+
+          case "stage_started":
+            setCurrentStage(event.stage);
+            if (event.specDir) setActiveSpecDir(event.specDir);
+            break;
+
+          case "stage_completed":
+            setTotalCost((prev) => prev + event.costUsd);
+            setTotalDuration((prev) => prev + event.durationMs);
+            break;
+
+          case "loop_terminated":
+            setLoopTermination(event.termination);
             break;
         }
       }
@@ -311,6 +366,11 @@ export function useOrchestrator(): OrchestratorHook {
     phasesCompleted,
     currentRunId,
     currentPhaseTraceId,
+    mode,
+    currentCycle,
+    currentStage,
+    isClarifying,
+    loopTermination,
     loadPhaseTrace,
     switchToLive,
     onPhaseCompleted,

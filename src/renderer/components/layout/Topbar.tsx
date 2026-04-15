@@ -1,5 +1,5 @@
-import { RefreshCw, Play, Square, FolderOpen } from "lucide-react";
-import type { RunConfig } from "../../../core/types.js";
+import { RefreshCw, Play, Square, FolderOpen, RotateCw } from "lucide-react";
+import type { RunConfig, LoopStageType } from "../../../core/types.js";
 
 interface AggregateStats {
   totalSpecs: number;
@@ -19,6 +19,12 @@ export interface TopbarProps {
   onDeselectSpec: () => void;
   onStart: (config: Partial<RunConfig>) => void;
   onStop: () => void;
+  // Loop state
+  mode?: string | null;
+  currentCycle?: number | null;
+  currentStage?: LoopStageType | null;
+  isClarifying?: boolean;
+  totalCost?: number;
 }
 
 export function Topbar({
@@ -30,6 +36,11 @@ export function Topbar({
   onDeselectSpec,
   onStart,
   onStop,
+  mode,
+  currentCycle,
+  currentStage,
+  isClarifying,
+  totalCost,
 }: TopbarProps) {
   const canStart = !!projectDir && aggregate.unfinishedSpecs > 0 && !isRunning;
 
@@ -201,6 +212,47 @@ export function Topbar({
               {aggregate.doneTasks}/{aggregate.totalTasks}
             </span>
           </span>
+        </div>
+      )}
+
+      {/* Loop Progress Indicators */}
+      {isRunning && mode === "loop" && (
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: "0.75rem",
+          color: "var(--foreground-muted)",
+          flexShrink: 0,
+        }}>
+          <RotateCw size={11} style={{ animation: "spin 2s linear infinite" }} />
+          {isClarifying ? (
+            <span style={{ color: "var(--primary)" }}>Clarifying...</span>
+          ) : (
+            <>
+              {currentCycle != null && (
+                <span>
+                  Cycle <span style={{ fontFamily: "var(--font-mono)", color: "var(--foreground)" }}>{currentCycle}</span>
+                </span>
+              )}
+              {currentStage && (
+                <span style={{
+                  padding: "1px 6px",
+                  borderRadius: "var(--radius)",
+                  background: "var(--primary-muted)",
+                  color: "var(--primary)",
+                  fontWeight: 500,
+                }}>
+                  {currentStage.replace("_", " ")}
+                </span>
+              )}
+            </>
+          )}
+          {totalCost != null && totalCost > 0 && (
+            <span style={{ fontFamily: "var(--font-mono)" }}>
+              ${totalCost.toFixed(2)}
+            </span>
+          )}
         </div>
       )}
 

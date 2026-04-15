@@ -1,4 +1,4 @@
-import type { OrchestratorEvent, Phase, RunConfig } from "../core/types.js";
+import type { OrchestratorEvent, Phase, RunConfig, LoopStageType, LoopTermination } from "../core/types.js";
 import type {
   RunRow,
   PhaseTraceRow,
@@ -17,6 +17,20 @@ interface RalphAPI {
   startRun(config: RunConfig): Promise<void>;
   stopRun(): Promise<void>;
   isRunning(): Promise<boolean>;
+  getRunState(): Promise<{
+    runId: string;
+    projectDir: string;
+    specDir: string;
+    mode: string;
+    model: string;
+    phaseTraceId: string;
+    phaseNumber: number;
+    phaseName: string;
+    currentCycle?: number;
+    currentStage?: string;
+    isClarifying?: boolean;
+    loopsCompleted?: number;
+  } | null>;
 
   // Orchestrator events
   onOrchestratorEvent(cb: (event: OrchestratorEvent) => void): () => void;
