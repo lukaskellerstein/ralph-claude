@@ -21,7 +21,7 @@ One chrome-devtools MCP server is configured in `.mcp.json`:
 
 | MCP Server | CDP Port | Target | Use For |
 |---|---|---|---|
-| `electron-chrome` | 9222 | Electron app | All UI changes (renderer pages, components, IPC-driven UI) |
+| `electron-chrome` | 9333 | Electron app | All UI changes (renderer pages, components, IPC-driven UI) |
 
 Tools available: `mcp__electron-chrome__take_snapshot`, `mcp__electron-chrome__take_screenshot`, `mcp__electron-chrome__click`, `mcp__electron-chrome__evaluate_script`, `mcp__electron-chrome__fill`, `mcp__electron-chrome__navigate_page`, etc.
 

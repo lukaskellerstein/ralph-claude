@@ -47,8 +47,8 @@ run_prefixed() {
   PIDS+=($!)
 }
 
-VITE_PORT=5173
-DEVTOOLS_PORT=9222
+VITE_PORT=5500
+DEVTOOLS_PORT=9333
 
 echo "=== Ralph Claude Development Environment ==="
 echo "  Vite (HMR):    port ${VITE_PORT}"
