@@ -1,24 +1,16 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "companyAnnouncements": ["Welcome to Ralph-Claude solution"],
   "permissions": {
     "allow": [
       "Agent",
-      "AskUserQuestion",
       "Bash",
-      "CronCreate",
-      "CronDelete",
-      "CronList",
       "Edit",
-      "EnterPlanMode",
-      "EnterWorktree",
       "ExitPlanMode",
-      "ExitWorktree",
       "Glob",
       "Grep",
-      "ListMcpResourcesTool",
       "NotebookEdit",
       "Read",
-      "ReadMcpResourceTool",
       "Skill",
       "TaskCreate",
       "TaskGet",
@@ -30,7 +22,7 @@
       "WebFetch",
       "WebSearch",
       "Write",
-      "mcp__kithable-chrome"
+      "mcp__electron-chrome"
     ],
     "deny": [
       "Bash(rm -rf /)",
@@ -102,7 +94,6 @@
       "Edit(./.git/**)",
       "Write(./.git/**)",
       "Read(./.git/worktrees/**)",
-      "EnterWorktree(./.git/worktrees/**)",
 
       "Read(./build/**)",
       "Glob(./build/**)",
