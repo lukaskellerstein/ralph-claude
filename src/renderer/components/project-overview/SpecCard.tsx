@@ -1,7 +1,23 @@
-import { CheckCircle, FileText, Loader2, Cog, Play } from "lucide-react";
+import { CheckCircle, FileText, Loader2, Cog, Play, Clock, DollarSign, Hash } from "lucide-react";
 import type { Phase, Task } from "../../../core/types.js";
 import type { SpecSummary } from "../../hooks/useProject.js";
 import { useState } from "react";
+
+function formatSpecDuration(ms: number): string {
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  const remMin = min % 60;
+  return `${hr}h ${remMin}m`;
+}
+
+function formatSpecTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tokens`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k tokens`;
+  return `${n} tokens`;
+}
 
 interface SpecCardProps {
   summary: SpecSummary;
@@ -238,9 +254,43 @@ export function SpecCard({ summary, onClick, onStart, isActive, isRunning, activ
             done={summary.doneTasks}
             total={summary.totalTasks}
             color="var(--primary)"
-
           />
         </div>
+
+        {/* Aggregate stats from historical traces */}
+        {summary.stats && summary.stats.phasesWithTraces > 0 && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              fontSize: "0.72rem",
+              fontFamily: "var(--font-mono)",
+              color: "var(--foreground-dim)",
+              paddingTop: 4,
+              flexWrap: "wrap",
+            }}
+          >
+            {summary.stats.totalCostUsd > 0 && (
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <DollarSign size={10} />
+                ${summary.stats.totalCostUsd.toFixed(2)}
+              </span>
+            )}
+            {summary.stats.totalDurationMs > 0 && (
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <Clock size={10} />
+                {formatSpecDuration(summary.stats.totalDurationMs)}
+              </span>
+            )}
+            {(summary.stats.totalInputTokens > 0 || summary.stats.totalOutputTokens > 0) && (
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <Hash size={10} />
+                {formatSpecTokens(summary.stats.totalInputTokens + summary.stats.totalOutputTokens)}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </button>
   );

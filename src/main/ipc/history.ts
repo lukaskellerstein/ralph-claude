@@ -5,6 +5,8 @@ import {
   getStepsForPhase,
   getSubagentsForPhase,
   getLatestPhaseTrace,
+  getSpecPhaseStats,
+  getSpecAggregateStats,
 } from "../../core/database.js";
 
 export function registerHistoryHandlers(): void {
@@ -34,6 +36,20 @@ export function registerHistoryHandlers(): void {
     "history:get-latest-phase-trace",
     (_event, projectDir: string, specDir: string, phaseNumber: number) => {
       return getLatestPhaseTrace(projectDir, specDir, phaseNumber);
+    }
+  );
+
+  ipcMain.handle(
+    "history:get-spec-phase-stats",
+    (_event, projectDir: string, specDir: string) => {
+      return getSpecPhaseStats(projectDir, specDir);
+    }
+  );
+
+  ipcMain.handle(
+    "history:get-spec-aggregate-stats",
+    (_event, projectDir: string, specDir: string) => {
+      return getSpecAggregateStats(projectDir, specDir);
     }
   );
 }

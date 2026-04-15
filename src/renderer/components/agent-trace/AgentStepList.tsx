@@ -2,6 +2,8 @@ import { useRef, useEffect, useMemo, useState, useCallback } from "react";
 import { Copy, Check, Bot, Clock } from "lucide-react";
 import type { AgentStep, SubagentInfo } from "../../../core/types.js";
 import { AgentStepItem } from "./AgentStepItem.js";
+import { computeStats } from "../../utils/computeStats.js";
+import { StatsBar } from "../shared/StatsBar.js";
 
 const LINE_LEFT = 20; // center of the vertical line
 const DOT_SIZE = 9;
@@ -32,6 +34,7 @@ interface AgentStepListProps {
   agentId?: string;
   startedAt?: string;
   durationMs?: number;
+  costUsd?: number;
   headerTitle?: string;
   subagents?: SubagentInfo[];
   onSubagentClick?: (subagentId: string) => void;
@@ -79,7 +82,7 @@ interface GroupedStep {
   resultSteps: AgentStep[];
 }
 
-export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs, headerTitle, subagents, onSubagentClick }: AgentStepListProps) {
+export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs, costUsd, headerTitle, subagents, onSubagentClick }: AgentStepListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
 
@@ -180,6 +183,11 @@ export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs
     autoScrollRef.current = atBottom;
   };
 
+  const stats = useMemo(
+    () => computeStats(steps, { durationMs, costUsd }),
+    [steps, durationMs, costUsd]
+  );
+
   return (
     <div
       style={{
@@ -236,6 +244,9 @@ export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs
           </span>
         )}
       </div>
+
+      {/* Stats */}
+      {steps.length > 0 && <StatsBar stats={stats} />}
 
       {/* Timeline */}
       <div

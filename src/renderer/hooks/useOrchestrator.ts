@@ -21,6 +21,7 @@ export interface OrchestratorHook {
   currentRunId: string | null;
   currentPhaseTraceId: string | null;
   loadPhaseTrace: (projectDir: string, specDir: string, phase: Phase) => Promise<boolean>;
+  switchToLive: () => Promise<void>;
   onPhaseCompleted: (cb: () => void) => void;
   onTasksUpdated: (cb: (phases: Phase[]) => void) => void;
 }
@@ -38,6 +39,7 @@ export function useOrchestrator(): OrchestratorHook {
   const [activeSpecDir, setActiveSpecDir] = useState<string | null>(null);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [viewingHistorical, setViewingHistorical] = useState(false);
+  const viewingHistoricalRef = useRef(false);
   const phaseCompletedCb = useRef<(() => void) | null>(null);
   const tasksUpdatedCb = useRef<((phases: Phase[]) => void) | null>(null);
 
@@ -109,6 +111,7 @@ export function useOrchestrator(): OrchestratorHook {
           case "run_started":
             setIsRunning(true);
             setViewingHistorical(false);
+            viewingHistoricalRef.current = false;
             setTotalCost(0);
             setTotalDuration(0);
             setPhasesCompleted(0);
@@ -129,30 +132,39 @@ export function useOrchestrator(): OrchestratorHook {
             break;
 
           case "phase_started":
-            setViewingHistorical(false);
             setCurrentPhase(event.phase);
             setCurrentPhaseTraceId(event.phaseTraceId);
-            setActiveTask(null);
-            setLiveSteps([]);
-            setSubagents([]);
+            // Only reset steps if user is watching the live stream;
+            // don't disrupt historical phase viewing
+            if (!viewingHistoricalRef.current) {
+              setLiveSteps([]);
+              setSubagents([]);
+              setActiveTask(null);
+            }
             break;
 
           case "agent_step":
-            setLiveSteps((prev) => [...prev, event.step]);
+            if (!viewingHistoricalRef.current) {
+              setLiveSteps((prev) => [...prev, event.step]);
+            }
             break;
 
           case "subagent_started":
-            setSubagents((prev) => [...prev, event.info]);
+            if (!viewingHistoricalRef.current) {
+              setSubagents((prev) => [...prev, event.info]);
+            }
             break;
 
           case "subagent_completed":
-            setSubagents((prev) =>
-              prev.map((s) =>
-                s.subagentId === event.subagentId
-                  ? { ...s, completedAt: new Date().toISOString() }
-                  : s
-              )
-            );
+            if (!viewingHistoricalRef.current) {
+              setSubagents((prev) =>
+                prev.map((s) =>
+                  s.subagentId === event.subagentId
+                    ? { ...s, completedAt: new Date().toISOString() }
+                    : s
+                )
+              );
+            }
             break;
 
           case "tasks_updated": {
@@ -236,12 +248,55 @@ export function useOrchestrator(): OrchestratorHook {
       setCurrentPhase(phase);
       setCurrentPhaseTraceId(trace.id);
       setViewingHistorical(true);
+      viewingHistoricalRef.current = true;
       setTotalCost(trace.cost_usd ?? 0);
       setTotalDuration(trace.duration_ms ?? 0);
       return true;
     },
     []
   );
+
+  const switchToLive = useCallback(async () => {
+    // Reload steps already accumulated for the current phase from DB
+    // so the user sees the full history, not just new events.
+    // Keep viewingHistoricalRef true during load to prevent duplicate
+    // steps from incoming events; flip it after setLiveSteps.
+    if (currentPhaseTraceId) {
+      const [stepRows, subagentRows] = await Promise.all([
+        window.ralphAPI.getPhaseSteps(currentPhaseTraceId),
+        window.ralphAPI.getPhaseSubagents(currentPhaseTraceId),
+      ]);
+
+      setLiveSteps(
+        stepRows.map((row) => ({
+          id: row.id,
+          sequenceIndex: row.sequence_index,
+          type: row.type as AgentStep["type"],
+          content: row.content,
+          metadata: row.metadata ? JSON.parse(row.metadata) : null,
+          durationMs: row.duration_ms,
+          tokenCount: row.token_count,
+          createdAt: row.created_at,
+        }))
+      );
+      setSubagents(
+        subagentRows.map((row) => ({
+          id: row.id,
+          subagentId: row.subagent_id,
+          subagentType: row.subagent_type,
+          description: row.description,
+          startedAt: row.started_at,
+          completedAt: row.completed_at,
+        }))
+      );
+    } else {
+      setLiveSteps([]);
+      setSubagents([]);
+    }
+
+    setViewingHistorical(false);
+    viewingHistoricalRef.current = false;
+  }, [currentPhaseTraceId]);
 
   return {
     liveSteps,
@@ -257,6 +312,7 @@ export function useOrchestrator(): OrchestratorHook {
     currentRunId,
     currentPhaseTraceId,
     loadPhaseTrace,
+    switchToLive,
     onPhaseCompleted,
     onTasksUpdated,
   };

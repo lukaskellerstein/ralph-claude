@@ -42,6 +42,10 @@ contextBridge.exposeInMainWorld("ralphAPI", {
     ipcRenderer.invoke("history:get-phase-subagents", phaseTraceId),
   getLatestPhaseTrace: (projectDir: string, specDir: string, phaseNumber: number) =>
     ipcRenderer.invoke("history:get-latest-phase-trace", projectDir, specDir, phaseNumber),
+  getSpecPhaseStats: (projectDir: string, specDir: string) =>
+    ipcRenderer.invoke("history:get-spec-phase-stats", projectDir, specDir),
+  getSpecAggregateStats: (projectDir: string, specDir: string) =>
+    ipcRenderer.invoke("history:get-spec-aggregate-stats", projectDir, specDir),
 
   // Window controls
   minimize: () => ipcRenderer.invoke("window-minimize"),

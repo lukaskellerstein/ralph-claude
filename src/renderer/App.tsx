@@ -137,9 +137,9 @@ export default function App() {
 
   const handleViewPhaseTrace = useCallback(
     async (phase: Phase) => {
-      // If this is the actively running phase, just switch to trace view
-      // — liveSteps already has the streaming data
+      // If this is the actively running phase, switch back to live stream
       if (orchestrator.isRunning && orchestrator.currentPhase?.number === phase.number) {
+        orchestrator.switchToLive();
         setCurrentView("trace");
         return;
       }
@@ -153,7 +153,7 @@ export default function App() {
         setCurrentView("trace");
       }
     },
-    [project.projectDir, project.selectedSpec, orchestrator.loadPhaseTrace, orchestrator.isRunning, orchestrator.currentPhase]
+    [project.projectDir, project.selectedSpec, orchestrator.loadPhaseTrace, orchestrator.switchToLive, orchestrator.isRunning, orchestrator.currentPhase]
   );
 
   let content;
@@ -235,6 +235,7 @@ export default function App() {
           agentId={orchestrator.currentPhaseTraceId ?? undefined}
           startedAt={traceStartedAt}
           durationMs={traceDurationMs}
+          costUsd={orchestrator.totalCost}
           subagents={orchestrator.subagents}
           onSubagentClick={handleSubagentClick}
         />
@@ -273,6 +274,7 @@ export default function App() {
                 phase={phase}
                 isRunning={orchestrator.isRunning && !orchestrator.viewingHistorical && orchestrator.currentPhase?.number === phase.number && orchestrator.activeSpecDir === project.selectedSpec}
                 isSelected={!orchestrator.isRunning && orchestrator.currentPhase?.number === phase.number && orchestrator.activeSpecDir === project.selectedSpec}
+                traceStats={project.phaseStats.get(phase.number)}
                 onViewTrace={handleViewPhaseTrace}
               />
             ))

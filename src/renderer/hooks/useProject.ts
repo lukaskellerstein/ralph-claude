@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Phase } from "../../core/types.js";
+import type { PhaseTraceRow, SpecStats } from "../../core/database.js";
 
 export interface SpecSummary {
   name: string;
@@ -8,7 +9,11 @@ export interface SpecSummary {
   doneTasks: number;
   completedPhases: number;
   totalPhases: number;
+  stats?: SpecStats;
 }
+
+/** Map of phaseNumber → latest PhaseTraceRow (for displaying per-phase stats) */
+export type PhaseStatsMap = Map<number, PhaseTraceRow>;
 
 export function useProject() {
   const [projectDir, setProjectDir] = useState<string | null>(null);
@@ -16,6 +21,7 @@ export function useProject() {
   const [specSummaries, setSpecSummaries] = useState<SpecSummary[]>([]);
   const [selectedSpec, setSelectedSpec] = useState<string | null>(null);
   const [phases, setPhases] = useState<Phase[]>([]);
+  const [phaseStats, setPhaseStats] = useState<PhaseStatsMap>(new Map());
 
   const loadSpecs = async (dir: string) => {
     const specList = await window.ralphAPI.listSpecs(dir);
@@ -23,7 +29,10 @@ export function useProject() {
 
     const summaries: SpecSummary[] = [];
     for (const spec of specList) {
-      const parsed = await window.ralphAPI.parseSpec(dir, spec);
+      const [parsed, stats] = await Promise.all([
+        window.ralphAPI.parseSpec(dir, spec),
+        window.ralphAPI.getSpecAggregateStats(dir, spec).catch(() => undefined),
+      ]);
       const totalTasks = parsed.reduce((s, p) => s + p.tasks.length, 0);
       const doneTasks = parsed.reduce(
         (s, p) => s + p.tasks.filter((t) => t.status === "done").length,
@@ -36,6 +45,7 @@ export function useProject() {
         doneTasks,
         completedPhases: parsed.filter((p) => p.status === "complete").length,
         totalPhases: parsed.length,
+        stats,
       });
     }
     setSpecSummaries(summaries);
@@ -69,13 +79,20 @@ export function useProject() {
   const selectSpec = async (specName: string) => {
     if (!projectDir) return;
     setSelectedSpec(specName);
-    const parsed = await window.ralphAPI.parseSpec(projectDir, specName);
+    const [parsed, traceRows] = await Promise.all([
+      window.ralphAPI.parseSpec(projectDir, specName),
+      window.ralphAPI.getSpecPhaseStats(projectDir, specName).catch(() => [] as PhaseTraceRow[]),
+    ]);
     setPhases(parsed);
+    const statsMap = new Map<number, PhaseTraceRow>();
+    for (const row of traceRows) statsMap.set(row.phase_number, row);
+    setPhaseStats(statsMap);
   };
 
   const deselectSpec = () => {
     setSelectedSpec(null);
     setPhases([]);
+    setPhaseStats(new Map());
   };
 
   const updateSpecSummary = (specDir: string, updatedPhases: Phase[]) => {
@@ -121,6 +138,7 @@ export function useProject() {
     selectedSpec,
     phases,
     setPhases,
+    phaseStats,
     aggregate,
     openProject,
     refreshProject,

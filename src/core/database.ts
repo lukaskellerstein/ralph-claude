@@ -313,6 +313,68 @@ export function getLatestPhaseTrace(
   return row ?? null;
 }
 
+/**
+ * Get the latest phase trace for each phase of a spec.
+ * Returns one row per phase (the most recent trace for that phase).
+ */
+export function getSpecPhaseStats(
+  projectDir: string,
+  specDir: string
+): PhaseTraceRow[] {
+  return getDb()
+    .prepare(
+      `SELECT pt.* FROM phase_traces pt
+       JOIN runs r ON r.id = pt.run_id
+       WHERE r.project_dir = ? AND (pt.spec_dir = ? OR pt.spec_dir IS NULL)
+         AND pt.id = (
+           SELECT pt2.id FROM phase_traces pt2
+           JOIN runs r2 ON r2.id = pt2.run_id
+           WHERE r2.project_dir = ? AND pt2.phase_number = pt.phase_number
+             AND (pt2.spec_dir = ? OR pt2.spec_dir IS NULL)
+           ORDER BY pt2.created_at DESC LIMIT 1
+         )
+       ORDER BY pt.phase_number`
+    )
+    .all(projectDir, specDir, projectDir, specDir) as PhaseTraceRow[];
+}
+
+export interface SpecStats {
+  totalCostUsd: number;
+  totalDurationMs: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  phasesWithTraces: number;
+}
+
+/**
+ * Aggregate stats across the latest trace of each phase for a spec.
+ */
+export function getSpecAggregateStats(
+  projectDir: string,
+  specDir: string
+): SpecStats {
+  const phases = getSpecPhaseStats(projectDir, specDir);
+  let totalCostUsd = 0;
+  let totalDurationMs = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+
+  for (const p of phases) {
+    totalCostUsd += p.cost_usd ?? 0;
+    totalDurationMs += p.duration_ms ?? 0;
+    totalInputTokens += p.input_tokens ?? 0;
+    totalOutputTokens += p.output_tokens ?? 0;
+  }
+
+  return {
+    totalCostUsd,
+    totalDurationMs,
+    totalInputTokens,
+    totalOutputTokens,
+    phasesWithTraces: phases.length,
+  };
+}
+
 export interface ActiveRunState {
   runId: string;
   projectDir: string;

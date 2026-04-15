@@ -9,12 +9,16 @@ import {
   ScrollText,
 } from "lucide-react";
 import type { Phase } from "../../../core/types.js";
+import type { PhaseTraceRow } from "../../../core/database.js";
 import { TaskRow } from "./TaskRow.js";
+import { StatsBar } from "../shared/StatsBar.js";
+import type { AgentStats } from "../../utils/computeStats.js";
 
 interface PhaseViewProps {
   phase: Phase;
   isRunning: boolean;
   isSelected: boolean;
+  traceStats?: PhaseTraceRow | null;
   onViewTrace?: (phase: Phase) => void;
 }
 
@@ -38,7 +42,7 @@ function PhaseStatusIcon({ status, isRunning }: { status: Phase["status"]; isRun
   }
 }
 
-export function PhaseView({ phase, isRunning, isSelected, onViewTrace }: PhaseViewProps) {
+export function PhaseView({ phase, isRunning, isSelected, traceStats, onViewTrace }: PhaseViewProps) {
   const highlighted = isRunning || isSelected;
   const [expanded, setExpanded] = useState(true);
 
@@ -200,6 +204,27 @@ export function PhaseView({ phase, isRunning, isSelected, onViewTrace }: PhaseVi
           }}
         >
           {phase.purpose}
+        </div>
+      )}
+
+      {/* Phase stats from historical trace */}
+      {expanded && traceStats && (traceStats.cost_usd != null || traceStats.duration_ms != null) && (
+        <div style={{ padding: "0 14px 8px 44px" }}>
+          <StatsBar
+            compact
+            stats={{
+              durationMs: traceStats.duration_ms,
+              costUsd: traceStats.cost_usd,
+              inputTokens: traceStats.input_tokens,
+              outputTokens: traceStats.output_tokens,
+              stepCount: 0,
+              toolCount: 0,
+              mcpCount: 0,
+              subagentCount: 0,
+              skillCount: 0,
+              errorCount: 0,
+            }}
+          />
         </div>
       )}
 

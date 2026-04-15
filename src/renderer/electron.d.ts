@@ -4,6 +4,7 @@ import type {
   PhaseTraceRow,
   TraceStepRow,
   SubagentRow,
+  SpecStats,
 } from "../core/database.js";
 
 interface RalphAPI {
@@ -26,6 +27,8 @@ interface RalphAPI {
   getPhaseSteps(phaseTraceId: string): Promise<TraceStepRow[]>;
   getPhaseSubagents(phaseTraceId: string): Promise<SubagentRow[]>;
   getLatestPhaseTrace(projectDir: string, specDir: string, phaseNumber: number): Promise<PhaseTraceRow | null>;
+  getSpecPhaseStats(projectDir: string, specDir: string): Promise<PhaseTraceRow[]>;
+  getSpecAggregateStats(projectDir: string, specDir: string): Promise<SpecStats>;
 
   // Window controls
   minimize(): Promise<void>;
