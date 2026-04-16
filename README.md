@@ -17,7 +17,25 @@
 
 ---
 
-Dex is an Electron desktop app that automates feature implementation using the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk) and [spec-kit](https://github.com/anthropics/claude-code/tree/main/skills). It spawns a fresh Claude Code agent per **phase** of work — each with clean context to prevent token bloat — while streaming every tool call, subagent spawn, and thinking step to a real-time trace UI.
+Dex is an Electron desktop app that automates feature implementation using the [Ralph Wiggum loop](https://ghuntley.com/ralph/) philosophy, the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk), and [spec-kit](https://github.com/anthropics/claude-code/tree/main/skills). It spawns a fresh Claude Code agent per **phase** of work — each with clean context to prevent token bloat — while streaming every tool call, subagent spawn, and thinking step to a real-time trace UI.
+
+## Why Dex? The Three-Pillar Synthesis
+
+Each pillar alone has critical gaps. Dex exists because the combination eliminates what each one lacks:
+
+| Used alone | What breaks |
+|---|---|
+| **Ralph Wiggum loop** | No structured specs — the agent picks tasks from a free-form TODO, builds the wrong thing, and burns budget. No UI, no abort, no cost tracking, no failure recovery beyond "kill the terminal." |
+| **Spec-kit** | No autonomous loop — specs are great but someone has to manually run each phase, check results, and decide what's next. It's a sequential human-driven workflow. |
+| **Claude Code (interactive)** | Single session degrades after ~100K tokens. No persistent memory across sessions. No structured planning. No verification beyond "it compiles." One task at a time, human-driven. |
+
+**Dex fuses all three:**
+
+- **Ralph's loop** provides context isolation and self-improvement — fresh `query()` per phase, learnings persist via filesystem
+- **Spec-kit** provides structured planning — specs with acceptance criteria before any code is written, constitution-governed consistency
+- **Claude Agent SDK** provides programmatic control — typed hooks, abort, MCP browser verification, session management
+
+The result: describe a project, clarify it into a complete plan, then walk away. Dex autonomously specs, plans, implements, verifies (including browser E2E), and recovers from failures — feature by feature, phase by phase.
 
 ## Features
 
