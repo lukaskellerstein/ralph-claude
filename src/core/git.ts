@@ -18,7 +18,7 @@ export function createBranch(
 ): string {
   const date = new Date().toISOString().slice(0, 10);
   const shortId = crypto.randomUUID().slice(0, 6);
-  const branchName = `ralph/${mode}/${date}-${shortId}`;
+  const branchName = `con/${date}-${shortId}`;
 
   exec(`git checkout -b ${branchName}`, projectDir);
   return branchName;

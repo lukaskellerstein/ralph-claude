@@ -2,6 +2,7 @@ import { useRef, useEffect, useMemo, useState, useCallback } from "react";
 import { Copy, Check, Bot, Clock } from "lucide-react";
 import type { AgentStep, SubagentInfo } from "../../../core/types.js";
 import { AgentStepItem } from "./AgentStepItem.js";
+import { SubagentList } from "./SubagentList.js";
 import { computeStats } from "../../utils/computeStats.js";
 import { StatsBar } from "../shared/StatsBar.js";
 
@@ -38,12 +39,15 @@ interface AgentStepListProps {
   headerTitle?: string;
   subagents?: SubagentInfo[];
   onSubagentClick?: (subagentId: string) => void;
+  onSubagentBadgeClick?: (subagent: SubagentInfo) => void;
+  /** When true, show all steps including those tagged as belonging to a subagent */
+  showSubagentSteps?: boolean;
 }
 
 function CopyIdBadge({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
   const handleClick = useCallback(() => {
-    navigator.clipboard.writeText(value);
+    navigator.clipboard.writeText(`AgentID: ${value}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }, [value]);
@@ -82,7 +86,11 @@ interface GroupedStep {
   resultSteps: AgentStep[];
 }
 
-export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs, costUsd, headerTitle, subagents, onSubagentClick }: AgentStepListProps) {
+type TimelineRow =
+  | { kind: "single"; entry: GroupedStep; idx: number }
+  | { kind: "parallel-spawns"; entries: GroupedStep[]; startIdx: number };
+
+export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs, costUsd, headerTitle, subagents, onSubagentClick, onSubagentBadgeClick, showSubagentSteps }: AgentStepListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
 
@@ -90,8 +98,12 @@ export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs
   // in legacy data, and noise from session-init subagents) and inject synthetic
   // completed steps from the SubagentInfo metadata which has correct data.
   const processedSteps = useMemo(() => {
-    // Remove all subagent_result steps — we'll synthesize them from SubagentInfo
-    const filtered = steps.filter((s) => s.type !== "subagent_result");
+    // Remove all subagent_result steps — we'll synthesize them from SubagentInfo.
+    // Also remove steps that belong to a subagent (tagged with belongsToSubagent
+    // metadata) — those should only appear in the subagent detail view.
+    const filtered = steps.filter((s) =>
+      s.type !== "subagent_result" && (showSubagentSteps || !s.metadata?.belongsToSubagent)
+    );
 
     if (!subagents || subagents.length === 0) return filtered;
 
@@ -136,7 +148,7 @@ export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs
       return ta - tb;
     });
     return merged;
-  }, [steps, subagents, isRunning]);
+  }, [steps, subagents, isRunning, showSubagentSteps]);
 
   // Group steps: pair tool_result/tool_error with their originating tool_call
   // using toolUseId from metadata. This handles parallel tool calls correctly
@@ -167,6 +179,35 @@ export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs
     }
     return result;
   }, [processedSteps]);
+
+  // Group consecutive subagent_spawn steps (within 2s) into parallel rows
+  const timelineRows = useMemo<TimelineRow[]>(() => {
+    const rows: TimelineRow[] = [];
+    let i = 0;
+    while (i < grouped.length) {
+      const entry = grouped[i];
+      if (entry.step.type === "subagent_spawn" && entry.step.createdAt) {
+        const t0 = new Date(entry.step.createdAt).getTime();
+        const batch: GroupedStep[] = [entry];
+        let j = i + 1;
+        while (j < grouped.length) {
+          const next = grouped[j];
+          if (next.step.type !== "subagent_spawn" || !next.step.createdAt) break;
+          if (Math.abs(new Date(next.step.createdAt).getTime() - t0) > 2000) break;
+          batch.push(next);
+          j++;
+        }
+        if (batch.length > 1) {
+          rows.push({ kind: "parallel-spawns", entries: batch, startIdx: i });
+          i = j;
+          continue;
+        }
+      }
+      rows.push({ kind: "single", entry, idx: i });
+      i++;
+    }
+    return rows;
+  }, [grouped]);
 
   // Auto-scroll to bottom when new steps arrive
   useEffect(() => {
@@ -248,6 +289,11 @@ export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs
       {/* Stats */}
       {steps.length > 0 && <StatsBar stats={stats} />}
 
+      {/* Subagents bar */}
+      {subagents && subagents.length > 0 && onSubagentBadgeClick && (
+        <SubagentList subagents={subagents} isParentRunning={isRunning} onSubagentClick={onSubagentBadgeClick} />
+      )}
+
       {/* Timeline */}
       <div
         ref={scrollRef}
@@ -278,24 +324,70 @@ export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs
 
           {/* Steps */}
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {grouped.map(({ step, resultSteps }, idx) => {
-              const prevStep = idx > 0 ? grouped[idx - 1].step : null;
+            {timelineRows.map((row) => {
+              if (row.kind === "single") {
+                const { entry: { step, resultSteps }, idx } = row;
+                const prevStep = idx > 0 ? grouped[idx - 1].step : null;
+                const deltaMs =
+                  prevStep && step.createdAt && prevStep.createdAt
+                    ? new Date(step.createdAt).getTime() -
+                      new Date(prevStep.createdAt).getTime()
+                    : null;
+
+                return (
+                  <div
+                    key={step.id}
+                    className="step-item"
+                    style={{
+                      paddingLeft: CONTENT_LEFT,
+                      position: "relative",
+                    }}
+                  >
+                    {/* Node dot */}
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: LINE_LEFT - DOT_SIZE / 2,
+                        top: 4,
+                        width: DOT_SIZE,
+                        height: DOT_SIZE,
+                        borderRadius: "50%",
+                        border: "2px solid var(--foreground-dim)",
+                        background: "var(--surface)",
+                        zIndex: 1,
+                      }}
+                    />
+
+                    <AgentStepItem
+                      step={step}
+                      resultSteps={resultSteps}
+                      timestamp={step.createdAt ? formatTime(step.createdAt) : undefined}
+                      delta={deltaMs != null && deltaMs > 0 ? formatDelta(deltaMs) : undefined}
+                      onSubagentClick={onSubagentClick}
+                    />
+                  </div>
+                );
+              }
+
+              // Parallel spawns group
+              const { entries, startIdx } = row;
+              const firstStep = entries[0].step;
+              const prevStep = startIdx > 0 ? grouped[startIdx - 1].step : null;
               const deltaMs =
-                prevStep && step.createdAt && prevStep.createdAt
-                  ? new Date(step.createdAt).getTime() -
+                prevStep && firstStep.createdAt && prevStep.createdAt
+                  ? new Date(firstStep.createdAt).getTime() -
                     new Date(prevStep.createdAt).getTime()
                   : null;
 
               return (
                 <div
-                  key={step.id}
-                  className="step-item"
+                  key={`parallel-${firstStep.id}`}
                   style={{
                     paddingLeft: CONTENT_LEFT,
                     position: "relative",
                   }}
                 >
-                  {/* Node dot — centered on the line */}
+                  {/* Node dot */}
                   <div
                     style={{
                       position: "absolute",
@@ -309,15 +401,44 @@ export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs
                       zIndex: 1,
                     }}
                   />
-
-                  {/* Content */}
-                  <AgentStepItem
-                    step={step}
-                    resultSteps={resultSteps}
-                    timestamp={step.createdAt ? formatTime(step.createdAt) : undefined}
-                    delta={deltaMs != null && deltaMs > 0 ? formatDelta(deltaMs) : undefined}
-                    onSubagentClick={onSubagentClick}
-                  />
+                  {/* Timestamp row */}
+                  {firstStep.createdAt && (
+                    <div style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      marginBottom: 8,
+                      fontSize: "0.7rem",
+                      fontFamily: "var(--font-mono)",
+                      color: "var(--foreground-dim)",
+                    }}>
+                      <Bot size={11} style={{ color: "hsl(263, 82%, 58%)" }} />
+                      <span style={{ color: "var(--foreground-muted)", fontWeight: 500 }}>
+                        {entries.length} parallel subagents
+                      </span>
+                      <span>{formatTime(firstStep.createdAt)}</span>
+                      {deltaMs != null && deltaMs > 0 && (
+                        <span style={{ color: "var(--primary)", opacity: 0.8 }}>
+                          {formatDelta(deltaMs)}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {/* Grid of spawn cards */}
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+                    gap: 8,
+                  }}>
+                    {entries.map(({ step, resultSteps }) => (
+                      <AgentStepItem
+                        key={step.id}
+                        step={step}
+                        resultSteps={resultSteps}
+                        onSubagentClick={onSubagentClick}
+                      />
+                    ))}
+                  </div>
                 </div>
               );
             })}
@@ -332,6 +453,7 @@ export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs
                 position: "relative",
               }}
             >
+              {/* Pulsing dot on timeline */}
               <div
                 style={{
                   position: "absolute",
@@ -345,15 +467,36 @@ export function AgentStepList({ steps, isRunning, agentId, startedAt, durationMs
                   zIndex: 1,
                 }}
               />
-              <span
+              {/* Shimmer bar with text — full width */}
+              <div
                 style={{
-                  fontSize: "0.8rem",
-                  color: "var(--foreground-dim)",
-                  fontStyle: "italic",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "6px 14px",
+                  borderRadius: "var(--radius)",
+                  background: `linear-gradient(
+                    90deg,
+                    color-mix(in srgb, var(--primary) 6%, transparent) 0%,
+                    color-mix(in srgb, var(--primary) 14%, transparent) 40%,
+                    color-mix(in srgb, var(--primary) 6%, transparent) 60%,
+                    color-mix(in srgb, var(--primary) 14%, transparent) 100%
+                  )`,
+                  backgroundSize: "200% 100%",
+                  animation: "shimmer-bar 2.5s ease-in-out infinite",
+                  border: "1px solid color-mix(in srgb, var(--primary) 15%, transparent)",
                 }}
               >
-                Agent is working...
-              </span>
+                <span
+                  style={{
+                    fontSize: "0.8rem",
+                    fontWeight: 500,
+                    color: "var(--foreground-dim)",
+                  }}
+                >
+                  Agent is working…
+                </span>
+              </div>
             </div>
           )}
         </div>

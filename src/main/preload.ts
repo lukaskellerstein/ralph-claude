@@ -6,11 +6,21 @@ contextBridge.exposeInMainWorld("ralphAPI", {
   listSpecs: (dir: string) => ipcRenderer.invoke("project:list-specs", dir),
   parseSpec: (dir: string, spec: string) =>
     ipcRenderer.invoke("project:parse-spec", dir, spec),
+  readFile: (filePath: string) =>
+    ipcRenderer.invoke("project:read-file", filePath) as Promise<string | null>,
+  writeFile: (filePath: string, content: string) =>
+    ipcRenderer.invoke("project:write-file", filePath, content) as Promise<boolean>,
+  pickFolder: () =>
+    ipcRenderer.invoke("project:pick-folder") as Promise<string | null>,
+  createProject: (parentDir: string, name: string) =>
+    ipcRenderer.invoke("project:create-project", parentDir, name) as Promise<{ path: string } | { error: string }>,
 
   // Orchestrator
   startRun: (config: Record<string, unknown>) =>
     ipcRenderer.invoke("orchestrator:start", config),
   stopRun: () => ipcRenderer.invoke("orchestrator:stop"),
+  answerQuestion: (requestId: string, answers: Record<string, string>) =>
+    ipcRenderer.invoke("orchestrator:answer-question", requestId, answers),
   isRunning: () => ipcRenderer.invoke("orchestrator:isRunning") as Promise<boolean>,
   getRunState: () => ipcRenderer.invoke("orchestrator:getRunState") as Promise<{
     runId: string;
@@ -40,6 +50,8 @@ contextBridge.exposeInMainWorld("ralphAPI", {
   // History
   listRuns: (limit?: number) => ipcRenderer.invoke("history:list-runs", limit),
   getRun: (runId: string) => ipcRenderer.invoke("history:get-run", runId),
+  getLatestProjectRun: (projectDir: string) =>
+    ipcRenderer.invoke("history:get-latest-project-run", projectDir),
   getPhaseSteps: (phaseTraceId: string) =>
     ipcRenderer.invoke("history:get-phase-steps", phaseTraceId),
   getPhaseSubagents: (phaseTraceId: string) =>

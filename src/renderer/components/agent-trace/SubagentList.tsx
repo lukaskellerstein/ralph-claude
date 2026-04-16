@@ -39,7 +39,7 @@ function CopyBadge({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(value);
+    navigator.clipboard.writeText(`AgentID: ${value}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }, [value]);
@@ -177,25 +177,23 @@ export function SubagentList({ subagents, isParentRunning = true, onSubagentClic
   if (subagents.length === 0) return null;
 
   return (
-    <div style={{ padding: "8px 12px" }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          marginBottom: 6,
-          fontSize: "0.72rem",
-          textTransform: "uppercase",
-          letterSpacing: "0.05em",
-          color: "var(--foreground-dim)",
-        }}
-      >
-        <GitFork size={11} />
-        Subagents
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {subagents.map((sa) => {
+    <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+        <span
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: "0.72rem",
+            textTransform: "uppercase",
+            letterSpacing: "0.05em",
+            color: "var(--foreground-dim)",
+          }}
+        >
+          <GitFork size={11} />
+          Subagents
+        </span>
+        {subagents.map((sa) => {
             const isRunning = isParentRunning && !sa.completedAt;
             const isExpanded = expandedId === sa.id;
             const typeLabel = sa.subagentType === "unknown"
@@ -257,16 +255,15 @@ export function SubagentList({ subagents, isParentRunning = true, onSubagentClic
                 />
               </button>
             );
-          })}
-        </div>
-
-        {/* Expanded detail panel */}
-        {expandedId && (
-          <SubagentDetail
-            sa={subagents.find((s) => s.id === expandedId)!}
-          />
-        )}
+        })}
       </div>
+
+      {/* Expanded detail panel */}
+      {expandedId && (
+        <SubagentDetail
+          sa={subagents.find((s) => s.id === expandedId)!}
+        />
+      )}
     </div>
   );
 }

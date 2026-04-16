@@ -394,6 +394,7 @@ export interface RunRow {
 export interface PhaseTraceRow {
   id: string;
   run_id: string;
+  spec_dir: string | null;
   phase_number: number;
   phase_name: string;
   status: string;
@@ -425,6 +426,20 @@ export interface SubagentRow {
   description: string | null;
   started_at: string;
   completed_at: string | null;
+}
+
+export function getLatestProjectRun(projectDir: string): { run: RunRow; phases: PhaseTraceRow[]; loopCycles: LoopCycleRow[] } | null {
+  const run = getDb()
+    .prepare(`SELECT * FROM runs WHERE project_dir = ? ORDER BY created_at DESC LIMIT 1`)
+    .get(projectDir) as RunRow | undefined;
+  if (!run) return null;
+  const phases = getDb()
+    .prepare(`SELECT * FROM phase_traces WHERE run_id = ? ORDER BY phase_number, created_at`)
+    .all(run.id) as PhaseTraceRow[];
+  const loopCycleRows = getDb()
+    .prepare(`SELECT * FROM loop_cycles WHERE run_id = ? ORDER BY cycle_number`)
+    .all(run.id) as LoopCycleRow[];
+  return { run, phases, loopCycles: loopCycleRows };
 }
 
 export function listRuns(limit = 20): RunRow[] {

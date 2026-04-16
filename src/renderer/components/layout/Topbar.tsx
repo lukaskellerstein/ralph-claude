@@ -1,5 +1,5 @@
-import { RefreshCw, Play, Square, FolderOpen, RotateCw } from "lucide-react";
-import type { RunConfig, LoopStageType } from "../../../core/types.js";
+import { RefreshCw, Play, Square, FolderOpen } from "lucide-react";
+import type { RunConfig } from "../../../core/types.js";
 
 interface AggregateStats {
   totalSpecs: number;
@@ -14,35 +14,28 @@ export interface TopbarProps {
   projectDir: string | null;
   aggregate: AggregateStats;
   isRunning: boolean;
+  isPausedLoop: boolean;
   onOpenProject: () => void;
+  onGoHome: () => void;
   onRefreshProject: () => void;
   onDeselectSpec: () => void;
   onStart: (config: Partial<RunConfig>) => void;
   onStop: () => void;
-  // Loop state
-  mode?: string | null;
-  currentCycle?: number | null;
-  currentStage?: LoopStageType | null;
-  isClarifying?: boolean;
-  totalCost?: number;
 }
 
 export function Topbar({
   projectDir,
   aggregate,
   isRunning,
+  isPausedLoop,
   onOpenProject,
+  onGoHome,
   onRefreshProject,
   onDeselectSpec,
   onStart,
   onStop,
-  mode,
-  currentCycle,
-  currentStage,
-  isClarifying,
-  totalCost,
 }: TopbarProps) {
-  const canStart = !!projectDir && aggregate.unfinishedSpecs > 0 && !isRunning;
+  const canStart = !!projectDir && (aggregate.unfinishedSpecs > 0 || isPausedLoop) && !isRunning;
 
   return (
     <div
@@ -58,7 +51,9 @@ export function Topbar({
       } as React.CSSProperties}
     >
       {/* App Brand */}
-      <div
+      <button
+        onClick={onGoHome}
+        title="Back to start"
         style={{
           display: "flex",
           alignItems: "center",
@@ -67,7 +62,15 @@ export function Topbar({
           fontWeight: 600,
           color: "var(--foreground-muted)",
           flexShrink: 0,
+          background: "transparent",
+          border: "none",
+          padding: "2px 4px",
+          borderRadius: "var(--radius)",
+          cursor: "pointer",
+          transition: "color 0.15s",
         }}
+        onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = "var(--foreground-muted)"; }}
       >
         <img
           src="./logo.png"
@@ -75,7 +78,7 @@ export function Topbar({
           style={{ width: 18, height: 18, borderRadius: 3 }}
         />
         Ralph Claude
-      </div>
+      </button>
 
       <div
         style={{
@@ -162,22 +165,7 @@ export function Topbar({
             <RefreshCw size={12} />
           </button>
         </>
-      ) : (
-        <button
-          onClick={onOpenProject}
-          style={{
-            padding: "3px 10px",
-            background: "var(--primary)",
-            color: "#fff",
-            borderRadius: "var(--radius)",
-            fontWeight: 500,
-            fontSize: "0.8rem",
-            flexShrink: 0,
-          }}
-        >
-          Open Project
-        </button>
-      )}
+      ) : null}
 
       {/* Spacer */}
       <div style={{ flex: 1 }} />
@@ -212,47 +200,6 @@ export function Topbar({
               {aggregate.doneTasks}/{aggregate.totalTasks}
             </span>
           </span>
-        </div>
-      )}
-
-      {/* Loop Progress Indicators */}
-      {isRunning && mode === "loop" && (
-        <div style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          fontSize: "0.75rem",
-          color: "var(--foreground-muted)",
-          flexShrink: 0,
-        }}>
-          <RotateCw size={11} style={{ animation: "spin 2s linear infinite" }} />
-          {isClarifying ? (
-            <span style={{ color: "var(--primary)" }}>Clarifying...</span>
-          ) : (
-            <>
-              {currentCycle != null && (
-                <span>
-                  Cycle <span style={{ fontFamily: "var(--font-mono)", color: "var(--foreground)" }}>{currentCycle}</span>
-                </span>
-              )}
-              {currentStage && (
-                <span style={{
-                  padding: "1px 6px",
-                  borderRadius: "var(--radius)",
-                  background: "var(--primary-muted)",
-                  color: "var(--primary)",
-                  fontWeight: 500,
-                }}>
-                  {currentStage.replace("_", " ")}
-                </span>
-              )}
-            </>
-          )}
-          {totalCost != null && totalCost > 0 && (
-            <span style={{ fontFamily: "var(--font-mono)" }}>
-              ${totalCost.toFixed(2)}
-            </span>
-          )}
         </div>
       )}
 
@@ -300,7 +247,7 @@ export function Topbar({
               }}
             >
               <Play size={11} />
-              Start
+              {isPausedLoop ? "Resume" : "Start"}
             </button>
           )}
         </div>

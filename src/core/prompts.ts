@@ -1,42 +1,149 @@
 import type { RunConfig, Phase } from "./types.js";
 
-// ── T005: Clarification Prompt (Phase A) ──
+// ── T005a: Product Domain Clarification Prompt ──
 
-export function buildClarificationPrompt(description: string): string {
-  return `You are conducting an interactive clarification session for a software project. Your goal is to fully understand what needs to be built, then produce a comprehensive plan document.
+export function buildProductClarificationPrompt(goalFilePath: string): string {
+  return `You are conducting the PRODUCT clarification session for a software project. The user has provided an initial project description in GOAL.md. Your job is to read it, identify gaps in the product definition, and ask clarifying questions focused exclusively on the product domain.
 
-## Project Description
+## Instructions
 
-${description}
+1. Read the user's initial plan at: ${goalFilePath}
+2. Identify what is missing or ambiguous about the PRODUCT
+3. Ask the user clarifying questions using the AskUserQuestion tool until you have enough information. Cover ONLY these areas:
 
-## Your Task
+   - **User Stories & Personas**: Who are the users? What are their goals and primary workflows?
+   - **Features & Functional Requirements**: What features are needed? What are the acceptance criteria for each?
+   - **Data Model**: Key entities, relationships, and data flows
+   - **Scope Boundaries**: What is explicitly IN scope and OUT of scope?
+   - **Prioritization**: Which features are MVP vs. nice-to-have?
 
-Ask the user clarifying questions using the AskUserQuestion tool until you have enough information to produce a complete plan. Cover these areas:
+Do NOT ask about technology stack, deployment, testing strategy, or build commands — those will be covered in a separate technical clarification session.
 
-1. **User Stories**: Who are the users? What are the primary workflows?
-2. **Functional Requirements**: What features are needed? What are the acceptance criteria?
-3. **Technology Stack**: Languages, frameworks, versions, deployment target
-4. **Data Model**: Key entities and relationships
-5. **Build/Test/Dev Commands**: How to build, test, and run the project
-6. **Testing Strategy**: Unit tests, integration tests, e2e approach
-7. **Non-Functional Requirements**: Performance, scalability, security constraints
-8. **Scope Boundaries**: What is explicitly out of scope?
+## Question Format Rules
+
+When using AskUserQuestion, ALWAYS mark exactly one option as recommended per question by setting \`recommended: true\` on that option. Choose the recommendation based on the project context from GOAL.md — pick the option that best fits the described project. This is critical for automatic clarification mode where the recommended options are auto-selected.
 
 ## Completeness Checklist
 
-Before writing the plan, verify you have answers for ALL of these:
+Before writing the output, verify you have answers for ALL of these:
+- [ ] User personas/roles identified
 - [ ] User stories with acceptance criteria per major feature
-- [ ] Technology stack with specific versions
-- [ ] Build, test, and dev commands
-- [ ] Deployment target (local, cloud, platform)
-- [ ] Testing strategy (unit, integration, e2e)
-- [ ] Data model overview (key entities)
+- [ ] Feature list with clear priorities (MVP vs. later)
+- [ ] Data model overview (key entities and relationships)
+- [ ] Scope boundaries (what's in, what's out)
 
 ## Output
 
-When you have sufficient information, write the complete plan to \`.specify/full_plan.md\` using the Write tool. The file must include all checklist items as structured markdown sections.
+When you have sufficient information, write the product domain output to \`GOAL_product_domain.md\` in the project root using the Write tool. Structure it as clear markdown sections covering all checklist items.
 
-After writing the file, output the absolute path to full_plan.md as the final line of your response.`;
+Do NOT modify the original GOAL.md — it is the user's input and must be preserved.
+
+After writing the file, output the absolute path to GOAL_product_domain.md as the final line of your response.`;
+}
+
+// ── T005b: Technical Domain Clarification Prompt ──
+
+export function buildTechnicalClarificationPrompt(
+  goalFilePath: string,
+  productDomainPath: string
+): string {
+  return `You are conducting the TECHNICAL clarification session for a software project. The product domain has already been clarified. Your job is to read the product decisions and ask clarifying questions focused exclusively on the technical domain.
+
+## Instructions
+
+1. Read the original project description at: ${goalFilePath}
+2. Read the product domain decisions at: ${productDomainPath}
+3. Identify what is missing or ambiguous about the TECHNICAL implementation
+4. Ask the user clarifying questions using the AskUserQuestion tool until you have enough information. Cover ONLY these areas:
+
+   - **Technology Stack**: Languages, frameworks, libraries with specific versions
+   - **Architecture**: Monolith vs. microservices, API patterns (REST, GraphQL, etc.), state management
+   - **Build/Test/Dev Commands**: How to build, test, and run the project locally
+   - **Deployment**: Target platform (local, cloud provider, container, serverless), CI/CD approach
+   - **Testing Strategy**: Unit, integration, e2e approach and tools
+   - **Non-Functional Requirements**: Performance targets, scalability limits, security constraints
+   - **Infrastructure**: Database, caching, message queues, external services/APIs
+
+Do NOT re-ask product questions (features, user stories, scope) — those are already decided in the product domain output.
+
+## Question Format Rules
+
+When using AskUserQuestion, ALWAYS mark exactly one option as recommended per question by setting \`recommended: true\` on that option. Choose the recommendation based on the project context from GOAL.md and the product domain output — pick the option that best fits the described project. This is critical for automatic clarification mode where the recommended options are auto-selected.
+
+## Completeness Checklist
+
+Before writing the output, verify you have answers for ALL of these:
+- [ ] Technology stack with specific versions (language, framework, key libraries)
+- [ ] Architecture pattern and key decisions
+- [ ] Build, test, and dev commands
+- [ ] Deployment target and approach
+- [ ] Testing strategy (unit, integration, e2e tools)
+- [ ] Non-functional requirements (performance, security)
+- [ ] Infrastructure dependencies (database, external services)
+
+## Output
+
+When you have sufficient information, write the technical domain output to \`GOAL_technical_domain.md\` in the project root using the Write tool. Structure it as clear markdown sections covering all checklist items.
+
+Do NOT modify the original GOAL.md or GOAL_product_domain.md.
+
+After writing the file, output the absolute path to GOAL_technical_domain.md as the final line of your response.`;
+}
+
+// ── T005c: Clarification Synthesis Prompt ──
+
+export function buildClarificationSynthesisPrompt(
+  goalFilePath: string,
+  productDomainPath: string,
+  technicalDomainPath: string
+): string {
+  return `You are synthesizing the results of a multi-domain clarification session into two output files. No interactive Q&A is needed — all information has been collected.
+
+## Instructions
+
+1. Read the original project description at: ${goalFilePath}
+2. Read the product domain decisions at: ${productDomainPath}
+3. Read the technical domain decisions at: ${technicalDomainPath}
+4. Produce TWO output files:
+
+### Output 1: GOAL_clarified.md
+
+Write \`GOAL_clarified.md\` in the project root. This is the comprehensive, unified project plan and the single source of truth for all subsequent specification and implementation work. It must include:
+
+- Project overview and vision
+- User personas and stories with acceptance criteria
+- Feature breakdown with priorities
+- Data model overview
+- Technology stack with versions
+- Architecture decisions
+- Build, test, and dev commands
+- Deployment target and approach
+- Testing strategy
+- Non-functional requirements
+- Scope boundaries
+
+Use structured markdown with clear sections and subsections. Use mermaid diagrams where they add clarity (data model, architecture, user flows).
+
+### Output 2: CLAUDE.md
+
+Write \`CLAUDE.md\` in the project root. This file provides instructions and rules for AI agents working on this project. It must include:
+
+- **Project name and one-line description**
+- **Technology stack** — languages, frameworks, key libraries with versions
+- **Architecture** — pattern, key constraints, folder structure expectations
+- **Commands** — build, test, dev, lint commands
+- **Code style** — conventions, patterns to follow, patterns to avoid
+- **Testing** — strategy, tools, coverage expectations
+- **Deployment** — target, CI/CD expectations
+- **Key constraints** — non-negotiable rules derived from technical decisions
+
+Keep CLAUDE.md concise and directive — it's an instruction file, not documentation. Use imperative language ("Use X", "Always Y", "Never Z").
+
+## Important
+
+- Do NOT modify GOAL.md, GOAL_product_domain.md, or GOAL_technical_domain.md
+- Do NOT ask interactive questions — synthesize from existing inputs only
+- After writing both files, output the absolute path to GOAL_clarified.md as the final line of your response.`;
 }
 
 // ── T006: Gap Analysis Prompt ──
@@ -75,7 +182,7 @@ ${config.projectDir}
 
 ## Scope Constraints
 
-- Only consider features explicitly described in full_plan.md
+- Only consider features explicitly described in GOAL.md
 - Do not invent new features or expand scope
 - Process features in the order they appear in the plan
 
@@ -95,9 +202,9 @@ export function buildConstitutionPrompt(
   config: RunConfig,
   fullPlanPath: string
 ): string {
-  return `/speckit.constitution
+  return `/speckit-constitution
 
-Read the full project plan at ${fullPlanPath} for context about the project being built. The project directory is ${config.projectDir}.`;
+Read the full project plan at ${fullPlanPath} and the project instructions at ${config.projectDir}/CLAUDE.md for detailed technical context about the project being built. The project directory is ${config.projectDir}.`;
 }
 
 // ── T008: Specify Prompt ──
@@ -112,9 +219,7 @@ export function buildSpecifyPrompt(
 Feature name: ${featureName}
 Feature description: ${featureDescription}
 
-Project directory: ${config.projectDir}
-
-Read .specify/full_plan.md for the complete project context. Extract the relevant user stories, requirements, and acceptance criteria for this specific feature.`;
+Project directory: ${config.projectDir}`;
 }
 
 // ── T009: Loop Plan Prompt ──
@@ -123,9 +228,7 @@ export function buildLoopPlanPrompt(
   config: RunConfig,
   specPath: string
 ): string {
-  return `/speckit-plan ${specPath}
-
-Read .specify/full_plan.md for the full project context including testing strategy and technology stack. Derive test requirements from the acceptance criteria in the spec.`;
+  return `/speckit-plan ${specPath}`;
 }
 
 // ── T010: Loop Tasks Prompt ──
@@ -208,7 +311,7 @@ export function buildImplementPrompt(
 
 ## Ralph Loop Guardrails
 
-- Read ${fullPlanPath} for full project context (READ-ONLY — do not modify full_plan.md)
+- Read ${fullPlanPath} for full project context (READ-ONLY — do not modify GOAL.md or GOAL_clarified.md)
 - Orient: You are implementing Phase ${phase.number}: ${phase.name}
 - After completing EACH task, immediately mark it [x] in ${specPath}/tasks.md
 - Run build/typecheck after each logical group of changes

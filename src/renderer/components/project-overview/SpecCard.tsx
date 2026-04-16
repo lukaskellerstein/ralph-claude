@@ -1,4 +1,4 @@
-import { CheckCircle, FileText, Loader2, Cog, Play, Clock, DollarSign, Hash } from "lucide-react";
+import { CheckCircle, FileText, Loader2, Cog, Clock, DollarSign, Hash } from "lucide-react";
 import type { Phase, Task } from "../../../core/types.js";
 import type { SpecSummary } from "../../hooks/useProject.js";
 import { useState } from "react";
@@ -22,7 +22,7 @@ function formatSpecTokens(n: number): string {
 interface SpecCardProps {
   summary: SpecSummary;
   onClick: () => void;
-  onStart: () => void;
+
   isActive?: boolean;
   isRunning?: boolean;
   activePhase?: Phase | null;
@@ -53,11 +53,9 @@ function MiniProgress({ done, total, color }: { done: number; total: number; col
   );
 }
 
-export function SpecCard({ summary, onClick, onStart, isActive, isRunning, activePhase, activeTask }: SpecCardProps) {
+export function SpecCard({ summary, onClick, isActive, isRunning, activePhase, activeTask }: SpecCardProps) {
   const [hovered, setHovered] = useState(false);
-  const [playHovered, setPlayHovered] = useState(false);
   const isComplete = summary.doneTasks === summary.totalTasks && summary.totalTasks > 0;
-  const showPlay = hovered && !isComplete && !isActive && !isRunning;
   const displayName = summary.name.split("/").pop() ?? summary.name;
 
   return (
@@ -109,31 +107,6 @@ export function SpecCard({ summary, onClick, onStart, isActive, isRunning, activ
         >
           {displayName}
         </span>
-        {showPlay && (
-          <div
-            onClick={(e) => {
-              e.stopPropagation();
-              onStart();
-            }}
-            onMouseEnter={() => setPlayHovered(true)}
-            onMouseLeave={() => setPlayHovered(false)}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 24,
-              height: 24,
-              borderRadius: "var(--radius)",
-              background: playHovered ? "var(--primary)" : "var(--primary-muted)",
-              cursor: "pointer",
-              transition: "background 0.15s",
-              flexShrink: 0,
-            }}
-            title="Run this spec only"
-          >
-            <Play size={12} color={playHovered ? "#fff" : "var(--primary)"} />
-          </div>
-        )}
         {isActive && (
           <span
             style={{

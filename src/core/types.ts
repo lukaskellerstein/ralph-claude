@@ -58,7 +58,11 @@ export interface SubagentInfo {
 // ── Loop Stage Types ──
 
 export type LoopStageType =
+  | "prerequisites"
   | "clarification"
+  | "clarification_product"
+  | "clarification_technical"
+  | "clarification_synthesis"
   | "constitution"
   | "gap_analysis"
   | "specify"
@@ -121,6 +125,32 @@ export interface LoopTermination {
   featuresSkipped: string[];
 }
 
+// ── User Input (AskUserQuestion) ──
+
+export interface UserInputQuestionOption {
+  label: string;
+  description: string;
+  recommended?: boolean;
+}
+
+export interface UserInputQuestion {
+  question: string;
+  header: string;
+  options: UserInputQuestionOption[];
+  multiSelect: boolean;
+}
+
+// ── Prerequisites Check Types ──
+
+export type PrerequisiteCheckName = "claude_cli" | "specify_cli" | "git_init" | "github_repo" | "speckit_init";
+export type PrerequisiteCheckStatus = "running" | "pass" | "fail" | "fixed";
+
+export interface PrerequisiteCheck {
+  name: PrerequisiteCheckName;
+  status: PrerequisiteCheckStatus;
+  message?: string;
+}
+
 // ── Configuration ──
 
 export interface RunConfig {
@@ -134,11 +164,13 @@ export interface RunConfig {
   runAllSpecs?: boolean;
 
   // Loop-mode fields (only relevant when mode === "loop")
-  description?: string;
   descriptionFile?: string;
-  fullPlanPath?: string;
   maxLoopCycles?: number;
   maxBudgetUsd?: number;
+  autoClarification?: boolean;
+
+  // Resume: set to a previous run's ID to continue from where it stopped
+  resumeRunId?: string;
 }
 
 // ── Events: Orchestrator → UI ──
@@ -167,6 +199,10 @@ export type OrchestratorEvent =
       prUrl: string | null;
     }
   | { type: "error"; message: string; phaseNumber?: number }
+  // Prerequisites events
+  | { type: "prerequisites_started"; runId: string }
+  | { type: "prerequisites_check"; runId: string; check: PrerequisiteCheck }
+  | { type: "prerequisites_completed"; runId: string }
   // Loop mode events
   | { type: "clarification_started"; runId: string }
   | { type: "clarification_question"; runId: string; question: string }
@@ -186,6 +222,7 @@ export type OrchestratorEvent =
       runId: string;
       cycleNumber: number;
       stage: LoopStageType;
+      phaseTraceId: string;
       specDir?: string;
       phaseNumber?: number;
     }
@@ -194,9 +231,14 @@ export type OrchestratorEvent =
       runId: string;
       cycleNumber: number;
       stage: LoopStageType;
+      phaseTraceId: string;
       costUsd: number;
       durationMs: number;
+      stopped?: boolean;
     }
-  | { type: "loop_terminated"; runId: string; termination: LoopTermination };
+  | { type: "loop_terminated"; runId: string; termination: LoopTermination }
+  // User input request/response (AskUserQuestion)
+  | { type: "user_input_request"; runId: string; requestId: string; questions: UserInputQuestion[] }
+  | { type: "user_input_response"; requestId: string; answers: Record<string, string> };
 
 export type EmitFn = (event: OrchestratorEvent) => void;

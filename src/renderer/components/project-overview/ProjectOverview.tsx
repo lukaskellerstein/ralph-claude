@@ -5,14 +5,14 @@ import { SpecCard } from "./SpecCard.js";
 interface ProjectOverviewProps {
   specSummaries: SpecSummary[];
   onSelectSpec: (spec: string) => void;
-  onStartSpec: (spec: string) => void;
+
   isRunning: boolean;
   activeSpecDir: string | null;
   activePhase: Phase | null;
   activeTask: Task | null;
 }
 
-export function ProjectOverview({ specSummaries, onSelectSpec, onStartSpec, isRunning, activeSpecDir, activePhase, activeTask }: ProjectOverviewProps) {
+export function ProjectOverview({ specSummaries, onSelectSpec, isRunning, activeSpecDir, activePhase, activeTask }: ProjectOverviewProps) {
   if (specSummaries.length === 0) {
     return (
       <div
@@ -54,7 +54,7 @@ export function ProjectOverview({ specSummaries, onSelectSpec, onStartSpec, isRu
               key={s.name}
               summary={s}
               onClick={() => onSelectSpec(s.name)}
-              onStart={() => onStartSpec(s.name)}
+
               isActive={isActive}
               isRunning={isRunning}
               activePhase={isActive ? activePhase : null}
