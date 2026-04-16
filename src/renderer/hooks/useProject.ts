@@ -52,7 +52,16 @@ export function useProject() {
     return specList;
   };
 
-  const openProject = async () => {
+  const clearProject = () => {
+    setProjectDir(null);
+    setSelectedSpec(null);
+    setPhases([]);
+    setSpecs([]);
+    setSpecSummaries([]);
+    setPhaseStats(new Map());
+  };
+
+  const openProject = async (): Promise<string | null> => {
     const dir = await window.ralphAPI.openProject();
     if (dir) {
       setProjectDir(dir);
@@ -60,6 +69,19 @@ export function useProject() {
       setPhases([]);
       await loadSpecs(dir);
     }
+    return dir;
+  };
+
+  const createProject = async (parentDir: string, name: string): Promise<{ path: string } | { error: string }> => {
+    const result = await window.ralphAPI.createProject(parentDir, name);
+    if ("path" in result) {
+      setProjectDir(result.path);
+      setSelectedSpec(null);
+      setPhases([]);
+      setSpecs([]);
+      setSpecSummaries([]);
+    }
+    return result;
   };
 
   const refreshProject = async () => {
@@ -96,24 +118,29 @@ export function useProject() {
   };
 
   const updateSpecSummary = (specDir: string, updatedPhases: Phase[]) => {
-    setSpecSummaries((prev) =>
-      prev.map((s) => {
-        if (s.name !== specDir) return s;
-        const totalTasks = updatedPhases.reduce((acc, p) => acc + p.tasks.length, 0);
-        const doneTasks = updatedPhases.reduce(
-          (acc, p) => acc + p.tasks.filter((t) => t.status === "done").length,
-          0
-        );
-        return {
-          ...s,
-          phases: updatedPhases,
-          totalTasks,
-          doneTasks,
-          completedPhases: updatedPhases.filter((p) => p.status === "complete").length,
-          totalPhases: updatedPhases.length,
-        };
-      })
+    const totalTasks = updatedPhases.reduce((acc, p) => acc + p.tasks.length, 0);
+    const doneTasks = updatedPhases.reduce(
+      (acc, p) => acc + p.tasks.filter((t) => t.status === "done").length,
+      0
     );
+    const completedPhases = updatedPhases.filter((p) => p.status === "complete").length;
+    const totalPhases = updatedPhases.length;
+
+    setSpecSummaries((prev) => {
+      const found = prev.some((s) => s.name === specDir);
+      if (found) {
+        return prev.map((s) => {
+          if (s.name !== specDir) return s;
+          return { ...s, phases: updatedPhases, totalTasks, doneTasks, completedPhases, totalPhases };
+        });
+      }
+      // Spec not yet in summaries — add it (happens when implement stage
+      // emits tasks_updated before refreshProject has loaded the spec)
+      return [
+        ...prev,
+        { name: specDir, phases: updatedPhases, totalTasks, doneTasks, completedPhases, totalPhases },
+      ];
+    });
   };
 
   // Aggregate stats across all specs
@@ -140,7 +167,9 @@ export function useProject() {
     setPhases,
     phaseStats,
     aggregate,
+    clearProject,
     openProject,
+    createProject,
     refreshProject,
     selectSpec,
     deselectSpec,

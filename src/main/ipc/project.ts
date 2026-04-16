@@ -49,4 +49,52 @@ export function registerProjectHandlers(): void {
       return parseTasksFile(projectDir, specDir);
     }
   );
+
+  ipcMain.handle(
+    "project:read-file",
+    (_event, filePath: string): string | null => {
+      try {
+        return fs.readFileSync(filePath, "utf-8");
+      } catch {
+        return null;
+      }
+    }
+  );
+
+  ipcMain.handle(
+    "project:write-file",
+    (_event, filePath: string, content: string): boolean => {
+      try {
+        fs.writeFileSync(filePath, content, "utf-8");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  );
+
+  ipcMain.handle("project:pick-folder", async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ["openDirectory", "createDirectory"],
+      title: "Select location for new project",
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle(
+    "project:create-project",
+    (_event, parentDir: string, projectName: string): { path: string } | { error: string } => {
+      const projectPath = path.join(parentDir, projectName);
+      if (fs.existsSync(projectPath)) {
+        return { error: `Directory already exists: ${projectPath}` };
+      }
+      try {
+        fs.mkdirSync(projectPath, { recursive: true });
+        return { path: projectPath };
+      } catch (err) {
+        return { error: `Failed to create directory: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+  );
 }

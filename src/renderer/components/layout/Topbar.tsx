@@ -14,7 +14,9 @@ export interface TopbarProps {
   projectDir: string | null;
   aggregate: AggregateStats;
   isRunning: boolean;
+  isPausedLoop: boolean;
   onOpenProject: () => void;
+  onGoHome: () => void;
   onRefreshProject: () => void;
   onDeselectSpec: () => void;
   onStart: (config: Partial<RunConfig>) => void;
@@ -25,13 +27,15 @@ export function Topbar({
   projectDir,
   aggregate,
   isRunning,
+  isPausedLoop,
   onOpenProject,
+  onGoHome,
   onRefreshProject,
   onDeselectSpec,
   onStart,
   onStop,
 }: TopbarProps) {
-  const canStart = !!projectDir && aggregate.unfinishedSpecs > 0 && !isRunning;
+  const canStart = !!projectDir && (aggregate.unfinishedSpecs > 0 || isPausedLoop) && !isRunning;
 
   return (
     <div
@@ -47,7 +51,9 @@ export function Topbar({
       } as React.CSSProperties}
     >
       {/* App Brand */}
-      <div
+      <button
+        onClick={onGoHome}
+        title="Back to start"
         style={{
           display: "flex",
           alignItems: "center",
@@ -56,7 +62,15 @@ export function Topbar({
           fontWeight: 600,
           color: "var(--foreground-muted)",
           flexShrink: 0,
+          background: "transparent",
+          border: "none",
+          padding: "2px 4px",
+          borderRadius: "var(--radius)",
+          cursor: "pointer",
+          transition: "color 0.15s",
         }}
+        onMouseEnter={(e) => { e.currentTarget.style.color = "var(--foreground)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = "var(--foreground-muted)"; }}
       >
         <img
           src="./logo.png"
@@ -64,7 +78,7 @@ export function Topbar({
           style={{ width: 18, height: 18, borderRadius: 3 }}
         />
         Ralph Claude
-      </div>
+      </button>
 
       <div
         style={{
@@ -151,22 +165,7 @@ export function Topbar({
             <RefreshCw size={12} />
           </button>
         </>
-      ) : (
-        <button
-          onClick={onOpenProject}
-          style={{
-            padding: "3px 10px",
-            background: "var(--primary)",
-            color: "#fff",
-            borderRadius: "var(--radius)",
-            fontWeight: 500,
-            fontSize: "0.8rem",
-            flexShrink: 0,
-          }}
-        >
-          Open Project
-        </button>
-      )}
+      ) : null}
 
       {/* Spacer */}
       <div style={{ flex: 1 }} />
@@ -248,7 +247,7 @@ export function Topbar({
               }}
             >
               <Play size={11} />
-              Start
+              {isPausedLoop ? "Resume" : "Start"}
             </button>
           )}
         </div>

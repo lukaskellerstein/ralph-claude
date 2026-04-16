@@ -2,6 +2,7 @@ import { ipcMain } from "electron";
 import {
   listRuns,
   getRun,
+  getLatestProjectRun,
   getStepsForPhase,
   getSubagentsForPhase,
   getLatestPhaseTrace,
@@ -16,6 +17,10 @@ export function registerHistoryHandlers(): void {
 
   ipcMain.handle("history:get-run", (_event, runId: string) => {
     return getRun(runId);
+  });
+
+  ipcMain.handle("history:get-latest-project-run", (_event, projectDir: string) => {
+    return getLatestProjectRun(projectDir);
   });
 
   ipcMain.handle(

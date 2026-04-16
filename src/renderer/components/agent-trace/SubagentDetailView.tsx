@@ -3,13 +3,23 @@ import {
   ArrowLeft,
   CheckCircle,
   Loader2,
+  GitBranch,
 } from "lucide-react";
 import type { SubagentInfo, AgentStep } from "../../../core/types.js";
 import { AgentStepList } from "./AgentStepList.js";
 
+interface SubagentDetailViewProps {
+  subagent: SubagentInfo;
+  parentSteps: AgentStep[];
+  allSubagents: SubagentInfo[];
+  isRunning: boolean;
+  onBack: () => void;
+}
+
 export function SubagentDetailView({
   subagent,
   parentSteps,
+  allSubagents,
   isRunning: parentIsRunning,
   onBack,
 }: SubagentDetailViewProps) {
@@ -27,16 +37,30 @@ export function SubagentDetailView({
     ? new Date(endTime).getTime() - new Date(subagent.startedAt).getTime()
     : Date.now() - new Date(subagent.startedAt).getTime();
 
-  // Extract steps that belong to this subagent's lifecycle window:
-  // from the subagent_spawn step to the subagent_result step (or end of steps).
-  // Also extract the prompt from the Agent/Task tool_call that preceded the spawn.
+  // Detect if this subagent was part of a parallel batch:
+  // other subagents with startedAt within 2s of this one
+  const isParallel = useMemo(() => {
+    const t0 = new Date(subagent.startedAt).getTime();
+    return allSubagents.some(
+      (s) => s.subagentId !== subagent.subagentId
+        && Math.abs(new Date(s.startedAt).getTime() - t0) < 2000
+    );
+  }, [allSubagents, subagent.subagentId, subagent.startedAt]);
+
+  // Extract steps that belong to this subagent.
+  // Strategy:
+  //   1. Tagged steps (belongsToSubagent === subId) — reliable when only 1 subagent active
+  //   2. Positional window (spawn→result) — works for sequential subagents
+  //   3. For parallel subagents with no tagged steps — show prompt only
+  //
+  // Also extracts the prompt from the Agent/Task tool_call that triggered this spawn.
+  // For parallel spawns, matches by description since tool_use_id isn't available.
   const subagentSteps = useMemo(() => {
     const subId = subagent.subagentId;
-    let capturing = false;
     const result: AgentStep[] = [];
-    let spawnIndex = -1;
 
-    // Find the spawn index first
+    // Find the spawn index for this subagent
+    let spawnIndex = -1;
     for (let i = 0; i < parentSteps.length; i++) {
       if (
         parentSteps[i].type === "subagent_spawn" &&
@@ -47,52 +71,88 @@ export function SubagentDetailView({
       }
     }
 
-    // Look backwards from spawn for the Agent/Task tool_call that triggered it
-    if (spawnIndex > 0) {
-      for (let i = spawnIndex - 1; i >= Math.max(0, spawnIndex - 5); i--) {
+    // Extract the prompt from the matching Task/Agent tool_call.
+    // For parallel spawns, all spawns appear AFTER all Task calls, so we can't
+    // just look at the nearest one. Instead, match by description field.
+    if (spawnIndex >= 0) {
+      const spawnDesc = subagent.description;
+      // Collect all Task/Agent tool_calls that precede ANY spawn in this batch
+      const taskCalls: { step: AgentStep; index: number }[] = [];
+      for (let i = spawnIndex - 1; i >= 0; i--) {
         const prev = parentSteps[i];
         if (prev.type === "tool_call") {
           const toolName = prev.metadata?.toolName as string | undefined;
           if (toolName === "Task" || toolName === "Agent") {
-            const prompt = (prev.metadata?.toolInput as Record<string, unknown>)?.prompt as string | undefined;
-            if (prompt) {
-              result.push({
-                id: `subagent-prompt-${subId}`,
-                sequenceIndex: -1,
-                type: "user_message",
-                content: prompt,
-                metadata: null,
-                durationMs: null,
-                tokenCount: null,
-                createdAt: subagent.startedAt,
-              });
-            }
-            break;
+            taskCalls.push({ step: prev, index: i });
           }
         }
+        // Stop searching once we hit a non-tool-call/non-spawn step far enough back
+        if (taskCalls.length > 0 && prev.type !== "tool_call" && prev.type !== "subagent_spawn") break;
+      }
+
+      // Try to match by description first (most reliable for parallel spawns)
+      let matchedPrompt: string | undefined;
+      if (spawnDesc && taskCalls.length > 1) {
+        const match = taskCalls.find((tc) => {
+          const input = tc.step.metadata?.toolInput as Record<string, unknown> | undefined;
+          return input?.description === spawnDesc;
+        });
+        if (match) {
+          matchedPrompt = (match.step.metadata?.toolInput as Record<string, unknown>)?.prompt as string | undefined;
+        }
+      }
+
+      // Fallback: for single spawns, just take the nearest Task/Agent call
+      if (!matchedPrompt && taskCalls.length > 0) {
+        const nearest = taskCalls[0];
+        matchedPrompt = (nearest.step.metadata?.toolInput as Record<string, unknown>)?.prompt as string | undefined;
+      }
+
+      if (matchedPrompt) {
+        result.push({
+          id: `subagent-prompt-${subId}`,
+          sequenceIndex: -1,
+          type: "user_message",
+          content: matchedPrompt,
+          metadata: null,
+          durationMs: null,
+          tokenCount: null,
+          createdAt: subagent.startedAt,
+        });
       }
     }
 
-    // Capture steps in the spawn→result window, excluding the
-    // spawn/result markers themselves (shown via the metadata card instead).
-    for (const step of parentSteps) {
-      if (
-        step.type === "subagent_spawn" &&
-        (step.metadata?.subagentId as string) === subId
-      ) {
-        capturing = true;
-        continue; // skip the spawn card itself
-      }
-      if (
-        step.type === "subagent_result" &&
-        (step.metadata?.subagentId as string) === subId
-      ) {
-        break; // stop before the result card
-      }
-      if (capturing) {
-        result.push(step);
+    // Primary: collect steps tagged with belongsToSubagent matching this subagent
+    const tagged = parentSteps.filter(
+      (s) => (s.metadata?.belongsToSubagent as string) === subId
+    );
+
+    if (tagged.length > 0) {
+      result.push(...tagged);
+    } else if (!isParallel) {
+      // Fallback for sequential subagents: capture steps in the spawn→result window
+      let capturing = false;
+      for (const step of parentSteps) {
+        if (
+          step.type === "subagent_spawn" &&
+          (step.metadata?.subagentId as string) === subId
+        ) {
+          capturing = true;
+          continue;
+        }
+        if (
+          step.type === "subagent_result" &&
+          (step.metadata?.subagentId as string) === subId
+        ) {
+          break;
+        }
+        if (capturing) {
+          result.push(step);
+        }
       }
     }
+    // For parallel subagents with no tagged steps: we only show the prompt.
+    // The parent timeline has all interleaved steps — we can't attribute them.
 
     // Append a synthetic "completed" step so the timeline ends cleanly
     if (subagent.completedAt) {
@@ -109,7 +169,7 @@ export function SubagentDetailView({
     }
 
     return result;
-  }, [parentSteps, subagent.subagentId, subagent.startedAt]);
+  }, [parentSteps, subagent.subagentId, subagent.startedAt, subagent.completedAt, subagent.description, isParallel]);
 
   return (
     <div
@@ -158,6 +218,21 @@ export function SubagentDetailView({
           <ArrowLeft size={12} />
           Parent Agent
         </button>
+        {isParallel && (
+          <span style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            fontSize: "0.7rem",
+            color: "var(--foreground-dim)",
+            padding: "2px 6px",
+            borderRadius: "var(--radius)",
+            background: "var(--primary-muted)",
+          }}>
+            <GitBranch size={10} />
+            parallel
+          </span>
+        )}
         <span
           style={{
             marginLeft: "auto",
@@ -193,6 +268,7 @@ export function SubagentDetailView({
         agentId={subagent.subagentId}
         startedAt={subagent.startedAt}
         durationMs={durationMs}
+        showSubagentSteps
       />
     </div>
   );

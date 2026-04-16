@@ -55,17 +55,122 @@ export interface SubagentInfo {
   completedAt: string | null;
 }
 
+// ── Loop Stage Types ──
+
+export type LoopStageType =
+  | "prerequisites"
+  | "clarification"
+  | "clarification_product"
+  | "clarification_technical"
+  | "clarification_synthesis"
+  | "constitution"
+  | "gap_analysis"
+  | "specify"
+  | "plan"
+  | "tasks"
+  | "implement"
+  | "verify"
+  | "learnings";
+
+export interface LoopStage {
+  type: LoopStageType;
+  specDir?: string;
+  phaseNumber?: number;
+  startedAt: string;
+  completedAt?: string;
+  costUsd: number;
+  durationMs: number;
+  result?: string;
+}
+
+export type GapAnalysisDecision =
+  | { type: "NEXT_FEATURE"; name: string; description: string }
+  | { type: "RESUME_FEATURE"; specDir: string }
+  | { type: "REPLAN_FEATURE"; specDir: string }
+  | { type: "GAPS_COMPLETE" };
+
+export interface LoopCycle {
+  id: string;
+  runId: string;
+  cycleNumber: number;
+  featureName: string | null;
+  specDir: string | null;
+  decision: GapAnalysisDecision;
+  stages: LoopStage[];
+  status: "running" | "completed" | "failed" | "skipped";
+  costUsd: number;
+  durationMs: number;
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface FailureRecord {
+  specDir: string;
+  implFailures: number;
+  replanFailures: number;
+}
+
+export type TerminationReason =
+  | "gaps_complete"
+  | "budget_exceeded"
+  | "max_cycles_reached"
+  | "user_abort";
+
+export interface LoopTermination {
+  reason: TerminationReason;
+  cyclesCompleted: number;
+  totalCostUsd: number;
+  totalDurationMs: number;
+  featuresCompleted: string[];
+  featuresSkipped: string[];
+}
+
+// ── User Input (AskUserQuestion) ──
+
+export interface UserInputQuestionOption {
+  label: string;
+  description: string;
+  recommended?: boolean;
+}
+
+export interface UserInputQuestion {
+  question: string;
+  header: string;
+  options: UserInputQuestionOption[];
+  multiSelect: boolean;
+}
+
+// ── Prerequisites Check Types ──
+
+export type PrerequisiteCheckName = "claude_cli" | "specify_cli" | "git_init" | "github_repo" | "speckit_init";
+export type PrerequisiteCheckStatus = "running" | "pass" | "fail" | "fixed";
+
+export interface PrerequisiteCheck {
+  name: PrerequisiteCheckName;
+  status: PrerequisiteCheckStatus;
+  message?: string;
+}
+
 // ── Configuration ──
 
 export interface RunConfig {
   projectDir: string;
   specDir: string;
-  mode: "plan" | "build";
+  mode: "plan" | "build" | "loop";
   model: string;
   maxIterations: number;
   maxTurns: number;
   phases: number[] | "all";
   runAllSpecs?: boolean;
+
+  // Loop-mode fields (only relevant when mode === "loop")
+  descriptionFile?: string;
+  maxLoopCycles?: number;
+  maxBudgetUsd?: number;
+  autoClarification?: boolean;
+
+  // Resume: set to a previous run's ID to continue from where it stopped
+  resumeRunId?: string;
 }
 
 // ── Events: Orchestrator → UI ──
@@ -93,6 +198,47 @@ export type OrchestratorEvent =
       branchName: string;
       prUrl: string | null;
     }
-  | { type: "error"; message: string; phaseNumber?: number };
+  | { type: "error"; message: string; phaseNumber?: number }
+  // Prerequisites events
+  | { type: "prerequisites_started"; runId: string }
+  | { type: "prerequisites_check"; runId: string; check: PrerequisiteCheck }
+  | { type: "prerequisites_completed"; runId: string }
+  // Loop mode events
+  | { type: "clarification_started"; runId: string }
+  | { type: "clarification_question"; runId: string; question: string }
+  | { type: "clarification_completed"; runId: string; fullPlanPath: string }
+  | { type: "loop_cycle_started"; runId: string; cycleNumber: number }
+  | {
+      type: "loop_cycle_completed";
+      runId: string;
+      cycleNumber: number;
+      decision: string;
+      featureName: string | null;
+      specDir: string | null;
+      costUsd: number;
+    }
+  | {
+      type: "stage_started";
+      runId: string;
+      cycleNumber: number;
+      stage: LoopStageType;
+      phaseTraceId: string;
+      specDir?: string;
+      phaseNumber?: number;
+    }
+  | {
+      type: "stage_completed";
+      runId: string;
+      cycleNumber: number;
+      stage: LoopStageType;
+      phaseTraceId: string;
+      costUsd: number;
+      durationMs: number;
+      stopped?: boolean;
+    }
+  | { type: "loop_terminated"; runId: string; termination: LoopTermination }
+  // User input request/response (AskUserQuestion)
+  | { type: "user_input_request"; runId: string; requestId: string; questions: UserInputQuestion[] }
+  | { type: "user_input_response"; requestId: string; answers: Record<string, string> };
 
 export type EmitFn = (event: OrchestratorEvent) => void;

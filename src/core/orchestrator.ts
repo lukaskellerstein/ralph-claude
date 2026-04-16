@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -10,7 +11,7 @@ import type {
   SubagentInfo,
   Task,
 } from "./types.js";
-import { parseTasksFile, derivePhaseStatus, extractTaskIds } from "./parser.js";
+import { parseTasksFile, derivePhaseStatus, extractTaskIds, parseGapAnalysisResult, discoverNewSpecDir } from "./parser.js";
 import {
   initDatabase,
   createRun,
@@ -20,12 +21,42 @@ import {
   insertStep,
   insertSubagent,
   completeSubagent,
+  insertLoopCycle,
+  updateLoopCycle,
+  upsertFailureRecord,
+  getFailureRecord,
+  updateRunLoopsCompleted,
+  getRun,
+  getLoopCycles,
 } from "./database.js";
 import {
   getCurrentBranch,
   createBranch,
   createPullRequest,
+  createLoopPullRequest,
 } from "./git.js";
+import {
+  buildProductClarificationPrompt,
+  buildTechnicalClarificationPrompt,
+  buildClarificationSynthesisPrompt,
+  buildGapAnalysisPrompt,
+  buildConstitutionPrompt,
+  buildSpecifyPrompt,
+  buildLoopPlanPrompt,
+  buildLoopTasksPrompt,
+  buildImplementPrompt,
+  buildVerifyPrompt,
+  buildLearningsPrompt,
+} from "./prompts.js";
+import type {
+  LoopStageType,
+  GapAnalysisDecision,
+  FailureRecord,
+  LoopTermination,
+  TerminationReason,
+  PrerequisiteCheck,
+  PrerequisiteCheckName,
+} from "./types.js";
 
 // ── Logging ──
 
@@ -110,6 +141,14 @@ function log(level: "INFO" | "ERROR" | "DEBUG" | "WARN", msg: string, data?: unk
 
 let abortController: AbortController | null = null;
 
+/** Sentinel error thrown when abort is detected between stages to skip remaining work. */
+class AbortError extends Error {
+  constructor() {
+    super("Run stopped by user");
+    this.name = "AbortError";
+  }
+}
+
 // ── Module-level run state (survives renderer reload) ──
 
 interface RunState {
@@ -121,6 +160,11 @@ interface RunState {
   phaseTraceId: string;
   phaseNumber: number;
   phaseName: string;
+  // Loop-mode fields
+  currentCycle?: number;
+  currentStage?: LoopStageType;
+  isClarifying?: boolean;
+  loopsCompleted?: number;
 }
 
 let currentRunState: RunState | null = null;
@@ -132,6 +176,39 @@ let currentRunState: RunState | null = null;
 export function getRunState(): RunState | null {
   if (!abortController) return null;
   return currentRunState;
+}
+
+// ── User Input (AskUserQuestion) ──
+
+/** Pending question resolvers — keyed by requestId */
+const pendingQuestions = new Map<string, (answers: Record<string, string>) => void>();
+
+/**
+ * Called from IPC when the user submits answers to a clarification question.
+ */
+export function submitUserAnswer(requestId: string, answers: Record<string, string>): void {
+  const resolver = pendingQuestions.get(requestId);
+  if (resolver) {
+    resolver(answers);
+    pendingQuestions.delete(requestId);
+  } else {
+    log("WARN", `submitUserAnswer: no pending question for requestId=${requestId}`);
+  }
+}
+
+/**
+ * Waits for user input. Emits the question event, then blocks until the user responds.
+ */
+function waitForUserInput(
+  emit: EmitFn,
+  runId: string,
+  questions: import("./types.js").UserInputQuestion[]
+): Promise<Record<string, string>> {
+  const requestId = crypto.randomUUID();
+  emit({ type: "user_input_request", runId, requestId, questions });
+  return new Promise<Record<string, string>>((resolve) => {
+    pendingQuestions.set(requestId, resolve);
+  });
 }
 
 // ── Pricing (USD per 1M tokens) ──
@@ -392,6 +469,7 @@ async function runPhase(
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   const knownSubagentIds = new Set<string>();
+  const activeSubagentSet = new Set<string>();
 
   const skillName = config.mode === "plan" ? "speckit-plan" : "speckit-implement";
   const specPath = config.specDir.startsWith("/")
@@ -404,7 +482,11 @@ async function runPhase(
 
   // Dual-write helper: emit to UI via IPC + persist to SQLite
   // Attaches running cost/token totals so the renderer can display live stats.
+  // Tags steps with the active subagent ID when exactly one subagent is active.
+  // When multiple subagents run in parallel, we can't determine which one owns
+  // a step, so we leave the tag empty.
   const emitAndStore = (step: AgentStep) => {
+    const activeSubagent = activeSubagentSet.size === 1 ? [...activeSubagentSet][0] : null;
     const enriched: AgentStep = {
       ...step,
       metadata: {
@@ -412,6 +494,7 @@ async function runPhase(
         costUsd: totalCost || null,
         inputTokens: totalInputTokens || null,
         outputTokens: totalOutputTokens || null,
+        ...(activeSubagent ? { belongsToSubagent: activeSubagent } : {}),
       },
     };
     rlog.phase("DEBUG", `emitAndStore: step type=${enriched.type}`, { id: enriched.id, seq: enriched.sequenceIndex });
@@ -550,6 +633,8 @@ async function runPhase(
                     description: info.description,
                   })
                 );
+                // Add AFTER emitting spawn step so the spawn itself isn't tagged
+                activeSubagentSet.add(info.subagentId);
                 return {};
               },
             ],
@@ -562,6 +647,9 @@ async function runPhase(
               async (input: Record<string, unknown>) => {
                 const subagentId = String(input.subagent_id ?? input.agent_id ?? "unknown");
                 rlog.subagentEvent(subagentId, "INFO", "SubagentStop", { rawInput: input });
+
+                // Remove BEFORE emitting result step so the result itself isn't tagged
+                activeSubagentSet.delete(subagentId);
 
                 // Skip subagents we never saw start — these are session-init
                 // subagents spawned before our hooks were registered.
@@ -743,20 +831,452 @@ async function runPhase(
   return { cost: totalCost, durationMs, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
 }
 
-// ── Main Loop ──
+// ── Stage Runner (lightweight query() wrapper for loop stages) ──
+
+async function runStage(
+  config: RunConfig,
+  prompt: string,
+  emit: EmitFn,
+  rlog: RunLogger,
+  runId: string,
+  cycleNumber: number,
+  stageType: import("./types.js").LoopStageType,
+  specDir?: string
+): Promise<{ result: string; cost: number; durationMs: number; inputTokens: number; outputTokens: number }> {
+  const startTime = Date.now();
+  let stepIndex = 0;
+  let totalCost = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let resultText = "";
+  const knownSubagentIds = new Set<string>();
+  const activeSubagentSet = new Set<string>();
+
+  // Create a phase trace for this stage so steps are persisted
+  const phaseTraceId = crypto.randomUUID();
+  createPhaseTrace({
+    id: phaseTraceId,
+    runId,
+    specDir: specDir ?? "",
+    phaseNumber: cycleNumber,
+    phaseName: `loop:${stageType}`,
+  });
+
+  rlog.phase("INFO", `runStage: ${stageType} for cycle ${cycleNumber}`);
+
+  // Keep currentRunState in sync so the renderer can recover after refresh
+  if (currentRunState) {
+    currentRunState.currentStage = stageType;
+    currentRunState.phaseTraceId = phaseTraceId;
+  }
+
+  const emitAndStore = (step: AgentStep) => {
+    const activeSubagent = activeSubagentSet.size === 1 ? [...activeSubagentSet][0] : null;
+    const enriched: AgentStep = {
+      ...step,
+      metadata: {
+        ...step.metadata,
+        costUsd: totalCost || null,
+        inputTokens: totalInputTokens || null,
+        outputTokens: totalOutputTokens || null,
+        ...(activeSubagent ? { belongsToSubagent: activeSubagent } : {}),
+      },
+    };
+    emit({ type: "agent_step", step: enriched });
+    insertStep({ ...enriched, phaseTraceId });
+  };
+
+  emitAndStore(makeStep("user_message", stepIndex++, prompt));
+
+  emit({
+    type: "stage_started",
+    runId,
+    cycleNumber,
+    stage: stageType,
+    phaseTraceId,
+    specDir,
+  });
+
+  const isAborted = () => abortController?.signal.aborted ?? false;
+
+  const { query } = await import("@anthropic-ai/claude-agent-sdk");
+
+  for await (const msg of query({
+    prompt,
+    options: {
+      model: config.model,
+      cwd: config.projectDir,
+      maxTurns: config.maxTurns,
+      permissionMode: "bypassPermissions",
+      settingSources: ["project"],
+      canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
+        if (toolName === "AskUserQuestion") {
+          rlog.phase("INFO", "canUseTool: AskUserQuestion intercepted");
+
+          // Parse SDK question format into our typed format
+          const rawQuestions = (toolInput.questions ?? []) as Array<Record<string, unknown>>;
+          const questions: import("./types.js").UserInputQuestion[] = rawQuestions.map((q) => ({
+            question: String(q.question ?? ""),
+            header: String(q.header ?? ""),
+            options: ((q.options ?? []) as Array<Record<string, unknown>>).map((o) => ({
+              label: String(o.label ?? ""),
+              description: String(o.description ?? ""),
+              recommended: Boolean(o.recommended),
+            })),
+            multiSelect: Boolean(q.multiSelect),
+          }));
+
+          let answers: Record<string, string>;
+
+          if (config.autoClarification) {
+            // Auto-answer with recommended options
+            answers = {};
+            for (const q of questions) {
+              const recommended = q.options.find((o) => o.recommended);
+              if (recommended) {
+                answers[q.question] = recommended.label;
+              } else if (q.options.length > 0) {
+                // Fallback: pick the first option if no recommended
+                answers[q.question] = q.options[0].label;
+                rlog.phase("WARN", `canUseTool: no recommended option for "${q.question}", using first option`);
+              }
+            }
+            // Still emit the event so the UI can show what was auto-selected
+            const requestId = crypto.randomUUID();
+            emit({ type: "user_input_request", runId, requestId, questions });
+            emit({ type: "user_input_response", requestId, answers });
+            rlog.phase("INFO", "canUseTool: auto-answered (autoClarification)", { answers });
+          } else {
+            // Interactive: emit event and wait for user answer
+            answers = await waitForUserInput(emit, runId, questions);
+            rlog.phase("INFO", "canUseTool: user answered", { answers });
+          }
+
+          return {
+            behavior: "allow" as const,
+            updatedInput: { questions: rawQuestions, answers },
+          };
+        }
+
+        // All other tools: auto-approve (bypassPermissions handles this too, belt-and-suspenders)
+        return { behavior: "allow" as const, updatedInput: toolInput };
+      },
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: undefined,
+            hooks: [
+              async (input: Record<string, unknown>) => {
+                const toolName = String(input.tool_name ?? "unknown");
+                rlog.phase("DEBUG", `runStage PreToolUse: ${toolName}`);
+
+                if (toolName === "Skill") {
+                  const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
+                  emitAndStore(
+                    makeStep("skill_invoke", stepIndex++, null, {
+                      skillName: toolInput.skill ?? "",
+                      skillArgs: toolInput.args ?? "",
+                      toolUseId: input.tool_use_id ?? null,
+                    })
+                  );
+                } else {
+                  emitAndStore(toToolCallStep(input, stepIndex++));
+                }
+
+                if (isAborted()) {
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: "PreToolUse",
+                      permissionDecision: "deny",
+                      permissionDecisionReason: "Run stopped by user",
+                    },
+                  };
+                }
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: "PreToolUse",
+                    permissionDecision: "allow",
+                  },
+                };
+              },
+            ],
+          },
+        ],
+        PostToolUse: [
+          {
+            matcher: undefined,
+            hooks: [
+              async (input: Record<string, unknown>) => {
+                const toolName = String(input.tool_name ?? "unknown");
+                if (toolName === "Skill") {
+                  const response = input.tool_response ?? input.tool_result ?? "";
+                  emitAndStore(
+                    makeStep("skill_result", stepIndex++, stringifyResponse(response), {
+                      toolUseId: input.tool_use_id ?? null,
+                    })
+                  );
+                } else {
+                  emitAndStore(toToolResultStep(input, stepIndex++));
+                }
+                return { hookSpecificOutput: { hookEventName: "PostToolUse" } };
+              },
+            ],
+          },
+        ],
+        SubagentStart: [
+          {
+            matcher: undefined,
+            hooks: [
+              async (input: Record<string, unknown>) => {
+                const info = toSubagentInfo(input);
+                knownSubagentIds.add(info.subagentId);
+                emit({ type: "subagent_started", info });
+                insertSubagent({ ...info, phaseTraceId });
+                emitAndStore(
+                  makeStep("subagent_spawn", stepIndex++, null, {
+                    subagentId: info.subagentId,
+                    subagentType: info.subagentType,
+                    description: info.description,
+                  })
+                );
+                activeSubagentSet.add(info.subagentId);
+                return {};
+              },
+            ],
+          },
+        ],
+        SubagentStop: [
+          {
+            matcher: undefined,
+            hooks: [
+              async (input: Record<string, unknown>) => {
+                const subagentId = String(input.subagent_id ?? input.agent_id ?? "unknown");
+                activeSubagentSet.delete(subagentId);
+                if (!knownSubagentIds.has(subagentId)) return {};
+                emit({ type: "subagent_completed", subagentId });
+                completeSubagent(subagentId);
+                emitAndStore(
+                  makeStep("subagent_result", stepIndex++, null, { subagentId })
+                );
+                return {};
+              },
+            ],
+          },
+        ],
+      },
+    },
+  })) {
+    if (isAborted()) break;
+
+    const message = msg as Record<string, unknown>;
+
+    if (message.type === "assistant") {
+      const innerMsg = message.message as Record<string, unknown> | undefined;
+      const content = innerMsg?.content as Array<Record<string, unknown>> | undefined;
+      const usage = (innerMsg?.usage ?? message.usage) as Record<string, unknown> | undefined;
+      if (usage) {
+        if (typeof usage.input_tokens === "number") totalInputTokens += usage.input_tokens;
+        if (typeof usage.output_tokens === "number") totalOutputTokens += usage.output_tokens;
+        totalCost = estimateCost(config.model, totalInputTokens, totalOutputTokens);
+      }
+      if (content) {
+        for (const block of content) {
+          if (block.type === "text" && typeof block.text === "string") {
+            emitAndStore(makeStep("text", stepIndex++, block.text));
+          }
+          if (block.type === "thinking" && typeof block.thinking === "string") {
+            emitAndStore(makeStep("thinking", stepIndex++, block.thinking));
+          }
+        }
+      }
+    }
+
+    if (message.type === "result") {
+      if (typeof message.total_cost_usd === "number") totalCost = message.total_cost_usd;
+      const resultUsage = message.usage as Record<string, unknown> | undefined;
+      if (resultUsage) {
+        if (typeof resultUsage.input_tokens === "number") totalInputTokens = resultUsage.input_tokens;
+        if (typeof resultUsage.output_tokens === "number") totalOutputTokens = resultUsage.output_tokens;
+      }
+      if (typeof message.result === "string") resultText = message.result;
+      rlog.phase("INFO", `runStage: ${stageType} result received`, {
+        cost: totalCost,
+        resultPreview: resultText.slice(0, 200),
+      });
+    }
+  }
+
+  const durationMs = Date.now() - startTime;
+
+  // Emit a completed step so the UI timeline ends cleanly (mirrors runPhase behavior)
+  if (!isAborted()) {
+    emitAndStore(makeStep("completed", stepIndex++, `Stage ${stageType} completed`, {
+      inputTokens: totalInputTokens || null,
+      outputTokens: totalOutputTokens || null,
+    }));
+  }
+
+  const stageStatus = isAborted() ? "stopped" : "completed";
+  completePhaseTrace(phaseTraceId, stageStatus, totalCost, durationMs, totalInputTokens || undefined, totalOutputTokens || undefined);
+
+  emit({
+    type: "stage_completed",
+    runId,
+    cycleNumber,
+    stage: stageType,
+    phaseTraceId,
+    costUsd: totalCost,
+    durationMs,
+    ...(isAborted() ? { stopped: true } : {}),
+  });
+
+  return { result: resultText, cost: totalCost, durationMs, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+}
+
+// ── Build Mode Runner (extracted from run()) ──
+
+async function runBuild(
+  config: RunConfig,
+  emit: EmitFn,
+  runId: string,
+  rlog: RunLogger
+): Promise<{ phasesCompleted: number; totalCost: number }> {
+  let phasesCompleted = 0;
+  let totalCost = 0;
+  const runStart = Date.now();
+
+  // Determine which specs to process
+  const specDirs = config.runAllSpecs
+    ? listSpecDirs(config.projectDir).filter(
+        (s) => !isSpecComplete(config.projectDir, s)
+      )
+    : [config.specDir];
+
+  if (specDirs.length === 0) {
+    rlog.run("INFO", "runBuild: no unfinished specs found");
+    return { phasesCompleted, totalCost };
+  }
+
+  rlog.run("INFO", `runBuild: will process ${specDirs.length} spec(s)`, { specDirs });
+
+  for (const specDir of specDirs) {
+    if (abortController?.signal.aborted) break;
+
+    const specConfig = { ...config, specDir };
+
+    emit({ type: "spec_started", specDir });
+    if (currentRunState) currentRunState.specDir = specDir;
+    rlog.run("INFO", `runBuild: starting spec ${specDir}`);
+
+    const initialPhases = parseTasksFile(config.projectDir, specDir);
+    const runTaskState = new RunTaskState(initialPhases);
+
+    let iteration = 0;
+    let specFailed = false;
+
+    while (iteration < config.maxIterations) {
+      if (abortController?.signal.aborted) break;
+
+      const targetPhases = runTaskState.getIncompletePhases(config.phases);
+
+      const phase = targetPhases[0];
+      if (!phase) break;
+
+      const phaseTraceId = crypto.randomUUID();
+      createPhaseTrace({
+        id: phaseTraceId,
+        runId,
+        specDir,
+        phaseNumber: phase.number,
+        phaseName: phase.name,
+      });
+
+      rlog.startPhase(phase.number, phase.name, phaseTraceId);
+      if (currentRunState) {
+        currentRunState.phaseTraceId = phaseTraceId;
+        currentRunState.phaseNumber = phase.number;
+        currentRunState.phaseName = phase.name;
+      }
+      emit({ type: "phase_started", phase, iteration, phaseTraceId });
+      emit({ type: "tasks_updated", phases: runTaskState.getPhases() });
+
+      try {
+        const result = await runPhase(specConfig, phase, phaseTraceId, emit, rlog, runTaskState);
+
+        completePhaseTrace(
+          phaseTraceId,
+          "completed",
+          result.cost,
+          result.durationMs,
+          result.inputTokens || undefined,
+          result.outputTokens || undefined
+        );
+
+        phasesCompleted++;
+        totalCost += result.cost;
+
+        const freshPhases = parseTasksFile(config.projectDir, specDir);
+        const reconciledPhases = runTaskState.reconcileFromDisk(freshPhases);
+        emit({ type: "tasks_updated", phases: reconciledPhases });
+
+        emit({
+          type: "phase_completed",
+          phase: { ...phase, status: "complete" },
+          cost: result.cost,
+          durationMs: result.durationMs,
+        });
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        rlog.phase("ERROR", `Phase ${phase.number} failed: ${message}`, { stack });
+        rlog.run("ERROR", `Phase ${phase.number} failed: ${message}`);
+        completePhaseTrace(phaseTraceId, "failed", 0, Date.now() - runStart);
+        emit({
+          type: "error",
+          message: `Phase ${phase.number} failed: ${message}`,
+          phaseNumber: phase.number,
+        });
+        specFailed = true;
+        break;
+      }
+
+      iteration++;
+    }
+
+    if (!specFailed && !abortController?.signal.aborted) {
+      rlog.run("INFO", `runBuild: spec ${specDir} completed`);
+      emit({ type: "spec_completed", specDir, phasesCompleted });
+    }
+
+    if (specFailed) break;
+  }
+
+  return { phasesCompleted, totalCost };
+}
+
+// ── Main Entry Point ──
 
 export async function run(config: RunConfig, emit: EmitFn): Promise<void> {
   initDatabase();
   abortController = new AbortController();
 
-  // Create a dedicated branch for this run
-  const baseBranch = getCurrentBranch(config.projectDir);
-  const branchName = createBranch(config.projectDir, config.mode);
+  // For loop mode, defer branch creation to after prerequisites (which may init git).
+  // For resume, stay on the current branch — don't create a new one.
+  let baseBranch = "";
+  let branchName = "";
+  if (config.resumeRunId) {
+    // Resume: stay on current branch (the user is already on the paused run's branch)
+    branchName = getCurrentBranch(config.projectDir);
+  } else if (config.mode !== "loop") {
+    baseBranch = getCurrentBranch(config.projectDir);
+    branchName = createBranch(config.projectDir, config.mode);
+  }
 
   const runId = crypto.randomUUID();
   const projectName = path.basename(config.projectDir);
   const rlog = new RunLogger(projectName, runId);
-  rlog.run("INFO", "run: starting orchestrator", { mode: config.mode, model: config.model, specDir: config.specDir, branch: branchName, baseBranch });
+  rlog.run("INFO", "run: starting orchestrator", { mode: config.mode, model: config.model, specDir: config.specDir, branch: branchName || "(deferred)", baseBranch: baseBranch || "(deferred)" });
 
   createRun({
     id: runId,
@@ -784,121 +1304,21 @@ export async function run(config: RunConfig, emit: EmitFn): Promise<void> {
   const runStart = Date.now();
 
   try {
-    // Determine which specs to process
-    const specDirs = config.runAllSpecs
-      ? listSpecDirs(config.projectDir).filter(
-          (s) => !isSpecComplete(config.projectDir, s)
-        )
-      : [config.specDir];
-
-    if (specDirs.length === 0) {
-      rlog.run("INFO", "run: no unfinished specs found");
-      return;
+    if (config.mode === "loop") {
+      const result = await runLoop(config, emit, runId, rlog);
+      phasesCompleted = result.phasesCompleted;
+      totalCost = result.totalCost;
+      // Branch was created inside runLoop after prerequisites
+      baseBranch = result.baseBranch;
+      branchName = result.branchName;
+    } else {
+      const result = await runBuild(config, emit, runId, rlog);
+      phasesCompleted = result.phasesCompleted;
+      totalCost = result.totalCost;
     }
-
-    rlog.run("INFO", `run: will process ${specDirs.length} spec(s)`, { specDirs });
-
-    for (const specDir of specDirs) {
-      if (abortController.signal.aborted) break;
-
-      // Update the config's specDir for the current spec
-      const specConfig = { ...config, specDir };
-
-      emit({ type: "spec_started", specDir });
-      if (currentRunState) currentRunState.specDir = specDir;
-      rlog.run("INFO", `run: starting spec ${specDir}`);
-
-      // Initialize in-memory task state once per spec. Updated via two paths:
-      // 1. TodoWrite detection (PostToolUse hook) — real-time during phase
-      // 2. Disk reconciliation (after each phase) — catches Edit tool changes
-      const initialPhases = parseTasksFile(config.projectDir, specDir);
-      const runTaskState = new RunTaskState(initialPhases);
-
-      let iteration = 0;
-      let specFailed = false;
-
-      while (iteration < config.maxIterations) {
-        if (abortController.signal.aborted) break;
-
-        const targetPhases = runTaskState.getIncompletePhases(config.phases);
-
-        const phase = targetPhases[0];
-        if (!phase) break; // all target phases complete for this spec
-
-        const phaseTraceId = crypto.randomUUID();
-        createPhaseTrace({
-          id: phaseTraceId,
-          runId,
-          specDir,
-          phaseNumber: phase.number,
-          phaseName: phase.name,
-        });
-
-        rlog.startPhase(phase.number, phase.name, phaseTraceId);
-        if (currentRunState) {
-          currentRunState.phaseTraceId = phaseTraceId;
-          currentRunState.phaseNumber = phase.number;
-          currentRunState.phaseName = phase.name;
-        }
-        emit({ type: "phase_started", phase, iteration, phaseTraceId });
-        emit({ type: "tasks_updated", phases: runTaskState.getPhases() });
-
-        try {
-          const result = await runPhase(specConfig, phase, phaseTraceId, emit, rlog, runTaskState);
-
-          completePhaseTrace(
-            phaseTraceId,
-            "completed",
-            result.cost,
-            result.durationMs,
-            result.inputTokens || undefined,
-            result.outputTokens || undefined
-          );
-
-          phasesCompleted++;
-          totalCost += result.cost;
-
-          // Reconcile in-memory state with disk — the agent marks tasks [x]
-          // by editing tasks.md directly (Edit tool), not just via TodoWrite.
-          // Without this, getIncompletePhases() would re-run completed phases.
-          const freshPhases = parseTasksFile(config.projectDir, specDir);
-          const reconciledPhases = runTaskState.reconcileFromDisk(freshPhases);
-          emit({ type: "tasks_updated", phases: reconciledPhases });
-
-          emit({
-            type: "phase_completed",
-            phase: { ...phase, status: "complete" },
-            cost: result.cost,
-            durationMs: result.durationMs,
-          });
-        } catch (err: unknown) {
-          const message =
-            err instanceof Error ? err.message : String(err);
-          const stack = err instanceof Error ? err.stack : undefined;
-          rlog.phase("ERROR", `Phase ${phase.number} failed: ${message}`, { stack });
-          rlog.run("ERROR", `Phase ${phase.number} failed: ${message}`);
-          completePhaseTrace(phaseTraceId, "failed", 0, Date.now() - runStart);
-          emit({
-            type: "error",
-            message: `Phase ${phase.number} failed: ${message}`,
-            phaseNumber: phase.number,
-          });
-          // Stop the run — phases are sequential and depend on each other
-          specFailed = true;
-          break;
-        }
-
-        iteration++;
-      }
-
-      if (!specFailed && !abortController.signal.aborted) {
-        rlog.run("INFO", `run: spec ${specDir} completed`);
-        emit({ type: "spec_completed", specDir, phasesCompleted });
-      }
-
-      // If a spec failed, stop processing further specs
-      if (specFailed) break;
-    }
+  } catch (err) {
+    // AbortError is expected when the user stops a run — not a real error
+    if (!(err instanceof AbortError)) throw err;
   } finally {
     const wasStopped = abortController?.signal.aborted ?? false;
     abortController = null;
@@ -908,9 +1328,8 @@ export async function run(config: RunConfig, emit: EmitFn): Promise<void> {
     const finalStatus = wasStopped ? "stopped" : "completed";
     completeRun(runId, finalStatus, totalCost, totalDuration, phasesCompleted);
 
-    // Create a PR if the run completed successfully with work done
     let prUrl: string | null = null;
-    if (!wasStopped && phasesCompleted > 0) {
+    if (!wasStopped && phasesCompleted > 0 && branchName) {
       rlog.run("INFO", `run: creating PR for branch ${branchName}`);
       prUrl = createPullRequest(
         config.projectDir,
@@ -933,6 +1352,956 @@ export async function run(config: RunConfig, emit: EmitFn): Promise<void> {
       prUrl,
     });
   }
+}
+
+// ── Prerequisites Check ──
+
+function isCommandOnPath(cmd: string): boolean {
+  try {
+    const whichCmd = process.platform === "win32" ? "where" : "which";
+    execSync(`${whichCmd} ${cmd}`, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getScriptType(): "sh" | "ps" {
+  return process.platform === "win32" ? "ps" : "sh";
+}
+
+async function runPrerequisites(
+  config: RunConfig,
+  emit: EmitFn,
+  runId: string,
+  rlog: RunLogger
+): Promise<void> {
+  rlog.run("INFO", "runPrerequisites: starting prerequisites checks");
+  emit({ type: "prerequisites_started", runId });
+
+  // Create a phase trace so the stage appears in preCycleStages
+  const phaseTraceId = crypto.randomUUID();
+  createPhaseTrace({
+    id: phaseTraceId,
+    runId,
+    specDir: "",
+    phaseNumber: 0,
+    phaseName: "loop:prerequisites",
+  });
+
+  emit({
+    type: "stage_started",
+    runId,
+    cycleNumber: 0,
+    stage: "prerequisites",
+    phaseTraceId,
+  });
+
+  const startTime = Date.now();
+
+  const emitCheck = (check: PrerequisiteCheck) => {
+    emit({ type: "prerequisites_check", runId, check });
+  };
+
+  // Track final status of each check
+  const checkResults = new Map<PrerequisiteCheckName, "pass" | "fail" | "fixed">();
+
+  // ── Check 1: Claude CLI ──
+  emitCheck({ name: "claude_cli", status: "running" });
+  let claudeOk = isCommandOnPath("claude");
+  if (claudeOk) {
+    rlog.run("INFO", "runPrerequisites: claude CLI found");
+    emitCheck({ name: "claude_cli", status: "pass" });
+    checkResults.set("claude_cli", "pass");
+  } else {
+    rlog.run("WARN", "runPrerequisites: claude CLI not found");
+    emitCheck({ name: "claude_cli", status: "fail", message: "Claude Code CLI not found on PATH" });
+
+    let resolved = false;
+    while (!resolved) {
+      if (abortController?.signal.aborted) return;
+      const answers = await waitForUserInput(emit, runId, [{
+        question: "Claude Code CLI is not installed or not on your PATH. Please install it and try again.",
+        header: "Missing: Claude CLI",
+        options: [
+          { label: "I've installed it — check again", description: "Re-run the check after you've installed Claude Code" },
+          { label: "Skip this check", description: "Proceed without verifying (not recommended)" },
+        ],
+        multiSelect: false,
+      }]);
+      const answer = Object.values(answers)[0];
+      if (answer === "Skip this check") {
+        emitCheck({ name: "claude_cli", status: "fixed", message: "Skipped by user" });
+        checkResults.set("claude_cli", "fixed");
+        resolved = true;
+      } else {
+        claudeOk = isCommandOnPath("claude");
+        if (claudeOk) {
+          emitCheck({ name: "claude_cli", status: "pass" });
+          checkResults.set("claude_cli", "pass");
+          resolved = true;
+        } else {
+          emitCheck({ name: "claude_cli", status: "fail", message: "Still not found — please check your PATH" });
+        }
+      }
+    }
+  }
+
+  // ── Check 2: Specify CLI ──
+  emitCheck({ name: "specify_cli", status: "running" });
+  let specifyOk = isCommandOnPath("specify");
+  if (specifyOk) {
+    rlog.run("INFO", "runPrerequisites: specify CLI found");
+    emitCheck({ name: "specify_cli", status: "pass" });
+    checkResults.set("specify_cli", "pass");
+  } else {
+    rlog.run("WARN", "runPrerequisites: specify CLI not found");
+    emitCheck({ name: "specify_cli", status: "fail", message: "Spec-Kit CLI not found on PATH" });
+
+    let resolved = false;
+    while (!resolved) {
+      if (abortController?.signal.aborted) return;
+      const answers = await waitForUserInput(emit, runId, [{
+        question: "Spec-Kit CLI (specify) is not installed. Install it with:\n\nuv tool install specify-cli --from git+https://github.com/github/spec-kit.git\n\nThen try again.",
+        header: "Missing: Spec-Kit CLI",
+        options: [
+          { label: "I've installed it — check again", description: "Re-run the check after you've installed spec-kit" },
+          { label: "Skip this check", description: "Proceed without spec-kit (the loop will likely fail)" },
+        ],
+        multiSelect: false,
+      }]);
+      const answer = Object.values(answers)[0];
+      if (answer === "Skip this check") {
+        emitCheck({ name: "specify_cli", status: "fixed", message: "Skipped by user" });
+        checkResults.set("specify_cli", "fixed");
+        resolved = true;
+      } else {
+        specifyOk = isCommandOnPath("specify");
+        if (specifyOk) {
+          emitCheck({ name: "specify_cli", status: "pass" });
+          checkResults.set("specify_cli", "pass");
+          resolved = true;
+        } else {
+          emitCheck({ name: "specify_cli", status: "fail", message: "Still not found — please check your PATH" });
+        }
+      }
+    }
+  }
+
+  // ── Check 3: Git repository ──
+  emitCheck({ name: "git_init", status: "running" });
+  const gitDir = path.join(config.projectDir, ".git");
+  if (fs.existsSync(gitDir)) {
+    rlog.run("INFO", "runPrerequisites: git repo already exists");
+    emitCheck({ name: "git_init", status: "pass" });
+    checkResults.set("git_init", "pass");
+  } else {
+    rlog.run("INFO", "runPrerequisites: initializing git repo");
+    try {
+      execSync("git init", {
+        cwd: config.projectDir,
+        stdio: "pipe",
+        timeout: 15_000,
+      });
+      if (fs.existsSync(gitDir)) {
+        rlog.run("INFO", "runPrerequisites: git init succeeded");
+        emitCheck({ name: "git_init", status: "pass" });
+        checkResults.set("git_init", "pass");
+      } else {
+        rlog.run("WARN", "runPrerequisites: git init ran but .git/ not found");
+        emitCheck({ name: "git_init", status: "fail", message: "git init ran but .git/ directory was not created" });
+        checkResults.set("git_init", "fail");
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      rlog.run("ERROR", "runPrerequisites: git init failed", { error: msg });
+      emitCheck({ name: "git_init", status: "fail", message: `git init failed: ${msg}` });
+      checkResults.set("git_init", "fail");
+    }
+  }
+
+  // ── Check 4: Spec-Kit initialized in project ──
+  emitCheck({ name: "speckit_init", status: "running" });
+  const integrationJson = path.join(config.projectDir, ".specify", "integration.json");
+  if (fs.existsSync(integrationJson)) {
+    rlog.run("INFO", "runPrerequisites: spec-kit already initialized");
+    emitCheck({ name: "speckit_init", status: "pass" });
+    checkResults.set("speckit_init", "pass");
+  } else if (specifyOk) {
+    // Auto-run specify init
+    rlog.run("INFO", "runPrerequisites: running specify init");
+    try {
+      const scriptType = getScriptType();
+      execSync(`specify init . --force --ai claude --script ${scriptType}`, {
+        cwd: config.projectDir,
+        stdio: "pipe",
+        timeout: 60_000,
+      });
+      if (fs.existsSync(integrationJson)) {
+        rlog.run("INFO", "runPrerequisites: specify init succeeded");
+        emitCheck({ name: "speckit_init", status: "pass" });
+        checkResults.set("speckit_init", "pass");
+      } else {
+        rlog.run("WARN", "runPrerequisites: specify init ran but integration.json not found");
+        emitCheck({ name: "speckit_init", status: "fail", message: "specify init ran but .specify/integration.json was not created" });
+        checkResults.set("speckit_init", "fail");
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      rlog.run("ERROR", "runPrerequisites: specify init failed", { error: msg });
+      emitCheck({ name: "speckit_init", status: "fail", message: `specify init failed: ${msg}` });
+      checkResults.set("speckit_init", "fail");
+    }
+  } else {
+    rlog.run("WARN", "runPrerequisites: cannot init spec-kit — specify CLI not available");
+    emitCheck({ name: "speckit_init", status: "fail", message: "Cannot initialize — specify CLI not available" });
+    checkResults.set("speckit_init", "fail");
+  }
+
+  // ── Check 5: GitHub repository (optional) ──
+  // Runs after spec-kit init so the initial commit includes all generated files
+  emitCheck({ name: "github_repo", status: "running" });
+  let hasRemote = false;
+  try {
+    const remote = execSync("git remote get-url origin", {
+      cwd: config.projectDir,
+      stdio: "pipe",
+      timeout: 5_000,
+    }).toString().trim();
+    hasRemote = remote.length > 0;
+  } catch {
+    // No remote configured
+  }
+
+  if (hasRemote) {
+    rlog.run("INFO", "runPrerequisites: GitHub remote already configured");
+    emitCheck({ name: "github_repo", status: "pass" });
+    checkResults.set("github_repo", "pass");
+  } else {
+    const ghOk = isCommandOnPath("gh");
+    if (!ghOk) {
+      rlog.run("INFO", "runPrerequisites: gh CLI not found, skipping GitHub repo setup");
+      emitCheck({ name: "github_repo", status: "fixed", message: "GitHub CLI (gh) not installed — skipped" });
+      checkResults.set("github_repo", "fixed");
+    } else {
+      let ghAuthed = false;
+      try {
+        execSync("gh auth status", { cwd: config.projectDir, stdio: "pipe", timeout: 10_000 });
+        ghAuthed = true;
+      } catch {
+        // Not authenticated
+      }
+
+      if (!ghAuthed) {
+        rlog.run("INFO", "runPrerequisites: gh not authenticated, skipping GitHub repo setup");
+        emitCheck({ name: "github_repo", status: "fixed", message: "GitHub CLI not authenticated — run 'gh auth login' to enable" });
+        checkResults.set("github_repo", "fixed");
+      } else {
+        if (abortController?.signal.aborted) return;
+        const answers = await waitForUserInput(emit, runId, [{
+          question: "Would you like to create a GitHub repository for this project?",
+          header: "GitHub Repository (optional)",
+          options: [
+            { label: "Yes — create a new repo", description: "Create a GitHub repository and push this project" },
+            { label: "No — skip", description: "Continue without a GitHub remote" },
+          ],
+          multiSelect: false,
+        }]);
+        const answer = Object.values(answers)[0];
+
+        if (answer === "No — skip") {
+          emitCheck({ name: "github_repo", status: "fixed", message: "Skipped by user" });
+          checkResults.set("github_repo", "fixed");
+        } else {
+          if (abortController?.signal.aborted) return;
+          const repoAnswers = await waitForUserInput(emit, runId, [{
+            question: "Enter the name for your new GitHub repository:",
+            header: "Repository Name",
+            options: [
+              { label: path.basename(config.projectDir), description: "Use project folder name" },
+            ],
+            multiSelect: false,
+          }]);
+          const repoName = Object.values(repoAnswers)[0];
+
+          rlog.run("INFO", `runPrerequisites: creating GitHub repo '${repoName}'`);
+          try {
+            // Commit all files created during prerequisites (GOAL.md, .specify/, .claude/, etc.)
+            execSync("git add -A && git commit -m \"Initial project setup (prerequisites)\"", {
+              cwd: config.projectDir,
+              stdio: "pipe",
+              timeout: 10_000,
+            });
+            execSync(`gh repo create "${repoName}" --private --source . --push`, {
+              cwd: config.projectDir,
+              stdio: "pipe",
+              timeout: 30_000,
+            });
+            rlog.run("INFO", "runPrerequisites: GitHub repo created successfully");
+            emitCheck({ name: "github_repo", status: "pass" });
+            checkResults.set("github_repo", "pass");
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            rlog.run("ERROR", "runPrerequisites: gh repo create failed", { error: msg });
+            emitCheck({ name: "github_repo", status: "fail", message: `Failed to create repo: ${msg}` });
+            checkResults.set("github_repo", "fail");
+          }
+        }
+      }
+    }
+  }
+
+  // ── If any check failed, block until user acknowledges ──
+  const failedChecks = [...checkResults.entries()].filter(([, s]) => s === "fail");
+  if (failedChecks.length > 0) {
+    const failedNames = failedChecks.map(([name]) => name).join(", ");
+    rlog.run("WARN", `runPrerequisites: ${failedChecks.length} check(s) failed: ${failedNames}`);
+
+    await waitForUserInput(emit, runId, [{
+      question: `${failedChecks.length} prerequisite check(s) failed: ${failedNames}. You can continue, but the loop may not work correctly.`,
+      header: "Prerequisites incomplete",
+      options: [
+        { label: "Continue anyway", description: "Proceed to clarification despite failed checks" },
+      ],
+      multiSelect: false,
+    }]);
+  }
+
+  const allPassed = failedChecks.length === 0;
+  const durationMs = Date.now() - startTime;
+  completePhaseTrace(phaseTraceId, allPassed ? "completed" : "completed", 0, durationMs, 0, 0);
+
+  emit({
+    type: "stage_completed",
+    runId,
+    cycleNumber: 0,
+    stage: "prerequisites",
+    phaseTraceId,
+    costUsd: 0,
+    durationMs,
+  });
+
+  emit({ type: "prerequisites_completed", runId });
+  rlog.run("INFO", "runPrerequisites: completed", { durationMs, allPassed });
+}
+
+// ── Loop Mode Runner ──
+
+async function runLoop(
+  config: RunConfig,
+  emit: EmitFn,
+  runId: string,
+  rlog: RunLogger
+): Promise<{ phasesCompleted: number; totalCost: number; baseBranch: string; branchName: string }> {
+  // Validate: loop mode requires a GOAL.md input
+  const goalPath = config.descriptionFile ?? path.join(config.projectDir, "GOAL.md");
+  if (!fs.existsSync(goalPath)) {
+    throw new Error(`Loop mode requires GOAL.md at ${goalPath}`);
+  }
+
+  const clarifiedPath = path.join(config.projectDir, "GOAL_clarified.md");
+  let fullPlanPath = "";
+  let cumulativeCost = 0;
+  let cyclesCompleted = 0;
+  const featuresCompleted: string[] = [];
+  const featuresSkipped: string[] = [];
+  const failureTracker = new Map<string, FailureRecord>();
+
+  // Load existing failure records from SQLite for crash recovery
+  const loadFailureRecords = () => {
+    for (const [, record] of failureTracker) {
+      const dbRecord = getFailureRecord(runId, record.specDir);
+      if (dbRecord) {
+        record.implFailures = dbRecord.impl_failures;
+        record.replanFailures = dbRecord.replan_failures;
+      }
+    }
+  };
+
+  const getOrCreateFailureRecord = (specDir: string): FailureRecord => {
+    let record = failureTracker.get(specDir);
+    if (!record) {
+      record = { specDir, implFailures: 0, replanFailures: 0 };
+      failureTracker.set(specDir, record);
+    }
+    return record;
+  };
+
+  const persistFailure = (specDir: string) => {
+    const record = getOrCreateFailureRecord(specDir);
+    upsertFailureRecord(runId, specDir, record.implFailures, record.replanFailures);
+  };
+
+  // ── Determine resume context from previous run ──
+  let resumeSpecDir: string | null = null;
+  let resumeLastStage: string | null = null;
+  if (config.resumeRunId) {
+    const prevRun = getRun(config.resumeRunId);
+    if (prevRun) {
+      const prevCycles = getLoopCycles(config.resumeRunId);
+      const lastCycle = prevCycles[prevCycles.length - 1];
+      if (lastCycle?.spec_dir) {
+        resumeSpecDir = lastCycle.spec_dir;
+      }
+      // Find the last stage that ran in the last cycle
+      const lastCycleStages = prevRun.phases
+        .filter((pt) => pt.phase_name.startsWith("loop:") && pt.phase_number === lastCycle?.cycle_number)
+        .sort((a, b) => a.created_at.localeCompare(b.created_at));
+      const lastStage = lastCycleStages[lastCycleStages.length - 1];
+      if (lastStage) {
+        resumeLastStage = lastStage.phase_name.replace("loop:", "");
+      }
+      // Carry over cumulative cost from the previous run
+      cumulativeCost = prevRun.run.total_cost_usd ?? 0;
+      cyclesCompleted = lastCycle ? lastCycle.cycle_number - 1 : 0;
+    }
+    rlog.run("INFO", `runLoop: resuming from run ${config.resumeRunId}`, { resumeSpecDir, resumeLastStage, cumulativeCost, cyclesCompleted });
+  }
+
+  const isResume = !!config.resumeRunId;
+
+  // ── Phase 0: Prerequisites (skip on resume) ──
+  if (!isResume) {
+    await runPrerequisites(config, emit, runId, rlog);
+    if (abortController?.signal.aborted) {
+      emit({ type: "loop_terminated", runId, termination: { reason: "user_abort", cyclesCompleted: 0, totalCostUsd: 0, totalDurationMs: 0, featuresCompleted: [], featuresSkipped: [] } });
+      return { phasesCompleted: 0, totalCost: 0, baseBranch: "", branchName: "" };
+    }
+  } else {
+    rlog.run("INFO", "runLoop: skipping prerequisites (resume)");
+    // Emit synthetic events so the UI can reconstruct the stepper state
+    emit({ type: "prerequisites_started", runId });
+    const prereqTraceId = crypto.randomUUID();
+    emit({ type: "stage_started", runId, cycleNumber: 0, stage: "prerequisites", phaseTraceId: prereqTraceId });
+    emit({ type: "stage_completed", runId, cycleNumber: 0, stage: "prerequisites", phaseTraceId: prereqTraceId, costUsd: 0, durationMs: 0 });
+    emit({ type: "prerequisites_completed", runId });
+  }
+
+  // ── Create git branch (skip on resume — stay on current branch) ──
+  let baseBranch: string;
+  let branchName: string;
+  if (isResume) {
+    branchName = getCurrentBranch(config.projectDir);
+    // Infer base branch — typically "main" or "master"
+    try {
+      execSync("git rev-parse --verify main", { cwd: config.projectDir, stdio: "ignore" });
+      baseBranch = "main";
+    } catch {
+      baseBranch = "master";
+    }
+    rlog.run("INFO", `runLoop: resuming on branch ${branchName}, baseBranch=${baseBranch}`);
+  } else {
+    baseBranch = getCurrentBranch(config.projectDir);
+    branchName = createBranch(config.projectDir, config.mode);
+    rlog.run("INFO", `runLoop: created branch ${branchName} from ${baseBranch}`);
+  }
+
+  // ── Phase A: Multi-Domain Clarification ──
+  // Skip if specs already exist (resume mode) — use existing GOAL_clarified.md
+  // Helper to emit a synthetic completed stage event (for skipped stages)
+  const emitSkippedStage = (stage: import("./types.js").LoopStageType, cycleNum = 0) => {
+    const traceId = crypto.randomUUID();
+    createPhaseTrace({ id: traceId, runId, specDir: "", phaseNumber: cycleNum, phaseName: `loop:${stage}` });
+    emit({ type: "stage_started", runId, cycleNumber: cycleNum, stage, phaseTraceId: traceId });
+    completePhaseTrace(traceId, "completed", 0, 0);
+    emit({ type: "stage_completed", runId, cycleNumber: cycleNum, stage, phaseTraceId: traceId, costUsd: 0, durationMs: 0 });
+  };
+
+  const existingSpecsAtStart = listSpecDirs(config.projectDir);
+  if (existingSpecsAtStart.length > 0 && fs.existsSync(clarifiedPath)) {
+    fullPlanPath = clarifiedPath;
+    rlog.run("INFO", `runLoop: specs exist (${existingSpecsAtStart.length}), skipping clarification, using ${clarifiedPath}`);
+    // Emit synthetic clarification events so the UI stepper advances past clarification
+    emit({ type: "clarification_started", runId });
+    emitSkippedStage("clarification_product");
+    emitSkippedStage("clarification_technical");
+    emitSkippedStage("clarification_synthesis");
+    emitSkippedStage("constitution");
+    emit({ type: "clarification_completed", runId, fullPlanPath: clarifiedPath });
+  } else {
+    emit({ type: "clarification_started", runId });
+    rlog.run("INFO", "runLoop: starting multi-domain clarification (Phase A)");
+
+    if (currentRunState) {
+      currentRunState.isClarifying = true;
+    }
+
+    // Step 1: Product domain clarification
+    const productDomainPath = path.join(config.projectDir, "GOAL_product_domain.md");
+    if (!fs.existsSync(productDomainPath)) {
+      rlog.run("INFO", "runLoop: starting product domain clarification");
+      const prompt = buildProductClarificationPrompt(goalPath);
+      const result = await runStage(config, prompt, emit, rlog, runId, 0, "clarification_product");
+      cumulativeCost += result.cost;
+      if (abortController?.signal.aborted) throw new AbortError();
+      if (!fs.existsSync(productDomainPath)) {
+        throw new Error("Product clarification completed but GOAL_product_domain.md not found");
+      }
+    } else {
+      rlog.run("INFO", "runLoop: GOAL_product_domain.md exists, skipping product clarification");
+      emitSkippedStage("clarification_product");
+    }
+
+    // Step 2: Technical domain clarification
+    if (abortController?.signal.aborted) throw new AbortError();
+    const technicalDomainPath = path.join(config.projectDir, "GOAL_technical_domain.md");
+    if (!fs.existsSync(technicalDomainPath)) {
+      rlog.run("INFO", "runLoop: starting technical domain clarification");
+      const prompt = buildTechnicalClarificationPrompt(goalPath, productDomainPath);
+      const result = await runStage(config, prompt, emit, rlog, runId, 0, "clarification_technical");
+      cumulativeCost += result.cost;
+      if (abortController?.signal.aborted) throw new AbortError();
+      if (!fs.existsSync(technicalDomainPath)) {
+        throw new Error("Technical clarification completed but GOAL_technical_domain.md not found");
+      }
+    } else {
+      rlog.run("INFO", "runLoop: GOAL_technical_domain.md exists, skipping technical clarification");
+      emitSkippedStage("clarification_technical");
+    }
+
+    // Step 3: Synthesis → GOAL_clarified.md + CLAUDE.md
+    if (abortController?.signal.aborted) throw new AbortError();
+    if (!fs.existsSync(clarifiedPath)) {
+      rlog.run("INFO", "runLoop: starting clarification synthesis");
+      const prompt = buildClarificationSynthesisPrompt(goalPath, productDomainPath, technicalDomainPath);
+      const result = await runStage(config, prompt, emit, rlog, runId, 0, "clarification_synthesis");
+      cumulativeCost += result.cost;
+      if (abortController?.signal.aborted) throw new AbortError();
+      if (!fs.existsSync(clarifiedPath)) {
+        throw new Error("Synthesis completed but GOAL_clarified.md not found");
+      }
+    } else {
+      rlog.run("INFO", "runLoop: GOAL_clarified.md exists, skipping synthesis");
+      emitSkippedStage("clarification_synthesis");
+    }
+
+    fullPlanPath = clarifiedPath;
+
+    // Step 4: Constitution (final step of clarification)
+    // The file may exist as an unfilled template (with [PLACEHOLDER] tokens) from `specify init`.
+    // Only skip if it exists AND has been filled (no placeholder tokens remain).
+    if (abortController?.signal.aborted) throw new AbortError();
+    const constitutionPath = path.join(config.projectDir, ".specify", "memory", "constitution.md");
+    const constitutionNeedsGeneration = !fs.existsSync(constitutionPath)
+      || fs.readFileSync(constitutionPath, "utf-8").includes("[PROJECT_NAME]");
+    if (constitutionNeedsGeneration) {
+      rlog.run("INFO", "runLoop: generating constitution");
+      const prompt = buildConstitutionPrompt(config, fullPlanPath);
+      const result = await runStage(config, prompt, emit, rlog, runId, 0, "constitution");
+      cumulativeCost += result.cost;
+    } else {
+      rlog.run("INFO", "runLoop: constitution already filled, skipping");
+      emitSkippedStage("constitution");
+    }
+
+    emit({ type: "clarification_completed", runId, fullPlanPath });
+    rlog.run("INFO", `runLoop: clarification completed, fullPlanPath=${fullPlanPath}`);
+
+    if (currentRunState) {
+      currentRunState.isClarifying = false;
+    }
+  }
+
+  // ── Phase B: Autonomous Loop ──
+  loadFailureRecords();
+
+  while (true) {
+    // Check abort
+    if (abortController?.signal.aborted) {
+      rlog.run("INFO", "runLoop: abort detected");
+      break;
+    }
+
+    // Check max cycles
+    if (config.maxLoopCycles && cyclesCompleted >= config.maxLoopCycles) {
+      rlog.run("INFO", `runLoop: max cycles reached (${config.maxLoopCycles})`);
+      break;
+    }
+
+    // Check budget
+    if (config.maxBudgetUsd && cumulativeCost >= config.maxBudgetUsd) {
+      rlog.run("INFO", `runLoop: budget exceeded ($${cumulativeCost.toFixed(2)} >= $${config.maxBudgetUsd})`);
+      break;
+    }
+
+    const cycleNumber = cyclesCompleted + 1;
+    const cycleId = crypto.randomUUID();
+    const cycleStart = Date.now();
+
+    emit({ type: "loop_cycle_started", runId, cycleNumber });
+    rlog.run("INFO", `runLoop: starting cycle ${cycleNumber}`);
+
+    if (currentRunState) {
+      currentRunState.currentCycle = cycleNumber;
+    }
+
+    // ── Gap Analysis (T029) ──
+    // On resume, skip gap analysis for the first cycle — we already know
+    // which spec to resume (from the previous run's data).
+    let decision: GapAnalysisDecision;
+    if (resumeSpecDir && cycleNumber === cyclesCompleted + 1) {
+      decision = { type: "RESUME_FEATURE", specDir: resumeSpecDir };
+      rlog.run("INFO", `runLoop: resume — skipping gap analysis, using RESUME_FEATURE for ${resumeSpecDir}`);
+      // Emit synthetic gap_analysis stage so UI shows it as completed
+      const traceId = crypto.randomUUID();
+      createPhaseTrace({ id: traceId, runId, specDir: resumeSpecDir, phaseNumber: cycleNumber, phaseName: "loop:gap_analysis" });
+      emit({ type: "stage_started", runId, cycleNumber, stage: "gap_analysis", phaseTraceId: traceId });
+      completePhaseTrace(traceId, "completed", 0, 0);
+      emit({ type: "stage_completed", runId, cycleNumber, stage: "gap_analysis", phaseTraceId: traceId, costUsd: 0, durationMs: 0 });
+      // Clear resumeSpecDir so subsequent cycles run gap analysis normally
+      resumeSpecDir = null;
+    } else {
+      try {
+        const existingSpecs = listSpecDirs(config.projectDir);
+        const prompt = buildGapAnalysisPrompt(config, fullPlanPath, existingSpecs);
+
+        if (currentRunState) {
+          currentRunState.currentStage = "gap_analysis";
+        }
+
+        const gapResult = await runStage(config, prompt, emit, rlog, runId, cycleNumber, "gap_analysis");
+        cumulativeCost += gapResult.cost;
+        decision = parseGapAnalysisResult(gapResult.result);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        rlog.run("ERROR", `runLoop: gap analysis failed: ${msg}`);
+        emit({ type: "error", message: `Gap analysis failed: ${msg}` });
+        break;
+      }
+    }
+
+    // Record the cycle
+    const decisionType = decision.type;
+    const featureName = decision.type === "NEXT_FEATURE" ? decision.name : null;
+    let specDir = decision.type === "RESUME_FEATURE" || decision.type === "REPLAN_FEATURE"
+      ? decision.specDir
+      : null;
+
+    insertLoopCycle({
+      id: cycleId,
+      runId,
+      cycleNumber,
+      featureName,
+      specDir,
+      decision: decisionType,
+    });
+
+    // ── GAPS_COMPLETE → terminate ──
+    if (decision.type === "GAPS_COMPLETE") {
+      rlog.run("INFO", "runLoop: all gaps complete");
+      updateLoopCycle(cycleId, "completed", 0, Date.now() - cycleStart);
+      emit({
+        type: "loop_cycle_completed",
+        runId,
+        cycleNumber,
+        decision: decisionType,
+        featureName: null,
+        specDir: null,
+        costUsd: 0,
+      });
+      break;
+    }
+
+    // ── Failure threshold checks (T038) ──
+    if (specDir) {
+      const record = getOrCreateFailureRecord(specDir);
+      if (record.replanFailures >= 3) {
+        rlog.run("WARN", `runLoop: skipping feature at ${specDir} — 3 replan failures`);
+        featuresSkipped.push(specDir);
+        updateLoopCycle(cycleId, "skipped", 0, Date.now() - cycleStart);
+        emit({
+          type: "loop_cycle_completed",
+          runId,
+          cycleNumber,
+          decision: "skipped",
+          featureName,
+          specDir,
+          costUsd: 0,
+        });
+        cyclesCompleted++;
+        updateRunLoopsCompleted(runId, cyclesCompleted);
+        continue;
+      }
+      if (record.implFailures >= 3) {
+        // Force replan
+        decision = { type: "REPLAN_FEATURE", specDir };
+        rlog.run("WARN", `runLoop: forcing replan for ${specDir} — 3 impl failures`);
+      }
+    }
+
+    let cycleCost = 0;
+
+    try {
+      // ── RESUME_FEATURE: emit synthetic completed events for skipped stages ──
+      if (decision.type === "RESUME_FEATURE") {
+        emitSkippedStage("specify", cycleNumber);
+        emitSkippedStage("plan", cycleNumber);
+        emitSkippedStage("tasks", cycleNumber);
+      }
+
+      // ── NEXT_FEATURE: specify → plan → tasks → implement → verify → learnings ──
+      if (decision.type === "NEXT_FEATURE") {
+        // Specify (T030)
+        if (currentRunState) {
+          currentRunState.currentStage = "specify";
+        }
+        const knownSpecs = listSpecDirs(config.projectDir);
+        const specifyPrompt = buildSpecifyPrompt(config, decision.name, decision.description);
+        const specifyResult = await runStage(config, specifyPrompt, emit, rlog, runId, cycleNumber, "specify");
+        cycleCost += specifyResult.cost;
+
+        if (abortController?.signal.aborted) throw new AbortError();
+
+        // Discover the newly created spec directory
+        specDir = discoverNewSpecDir(config.projectDir, knownSpecs);
+        if (!specDir) {
+          throw new Error("Specify completed but no new spec directory was created");
+        }
+        rlog.run("INFO", `runLoop: new spec directory: ${specDir}`);
+      }
+
+      // Plan (T031) — for NEXT_FEATURE and REPLAN_FEATURE
+      if (decision.type === "NEXT_FEATURE" || decision.type === "REPLAN_FEATURE") {
+        if (abortController?.signal.aborted) throw new AbortError();
+
+        const targetSpecDir = specDir!;
+        const specPath = targetSpecDir.startsWith("/")
+          ? targetSpecDir
+          : path.join(config.projectDir, targetSpecDir);
+
+        if (currentRunState) {
+          currentRunState.currentStage = "plan";
+        }
+        const planPrompt = buildLoopPlanPrompt(config, specPath);
+        const planResult = await runStage(config, planPrompt, emit, rlog, runId, cycleNumber, "plan", targetSpecDir);
+        cycleCost += planResult.cost;
+
+        if (abortController?.signal.aborted) throw new AbortError();
+
+        // Tasks (T031)
+        if (currentRunState) {
+          currentRunState.currentStage = "tasks";
+        }
+        const tasksPrompt = buildLoopTasksPrompt(config, specPath);
+        const tasksResult = await runStage(config, tasksPrompt, emit, rlog, runId, cycleNumber, "tasks", targetSpecDir);
+        cycleCost += tasksResult.cost;
+      }
+
+      if (abortController?.signal.aborted) throw new AbortError();
+
+      // Implement (T032)
+      const implSpecDir = specDir!;
+      const implSpecPath = implSpecDir.startsWith("/")
+        ? implSpecDir
+        : path.join(config.projectDir, implSpecDir);
+
+      if (currentRunState) {
+        currentRunState.currentStage = "implement";
+        currentRunState.specDir = implSpecDir;
+      }
+
+      // Create a stage-level phase trace so the UI shows implement in the stage list
+      const implStageTraceId = crypto.randomUUID();
+      createPhaseTrace({
+        id: implStageTraceId,
+        runId,
+        specDir: implSpecDir,
+        phaseNumber: cycleNumber,
+        phaseName: "loop:implement",
+      });
+
+      emit({
+        type: "stage_started",
+        runId,
+        cycleNumber,
+        stage: "implement",
+        phaseTraceId: implStageTraceId,
+        specDir: implSpecDir,
+      });
+
+      const implStageStart = Date.now();
+      let implStageCost = 0;
+      let implStageInputTokens = 0;
+      let implStageOutputTokens = 0;
+
+      // Parse tasks.md to get phases, then run each phase.
+      // RunTaskState is created ONCE and reused across all phases so that
+      // progress from earlier phases is preserved (promote-only semantics).
+      const phases = parseTasksFile(config.projectDir, implSpecDir);
+      const implConfig = { ...config, specDir: implSpecDir };
+      const runTaskState = new RunTaskState(phases);
+
+      // Emit initial task state so the UI can show the spec card immediately
+      emit({ type: "tasks_updated", phases: runTaskState.getPhases() });
+
+      for (const phase of phases) {
+        if (abortController?.signal.aborted) break;
+        if (phase.status === "complete") continue;
+
+        const phaseTraceId = crypto.randomUUID();
+        createPhaseTrace({
+          id: phaseTraceId,
+          runId,
+          specDir: implSpecDir,
+          phaseNumber: phase.number,
+          phaseName: phase.name,
+        });
+
+        if (currentRunState) {
+          currentRunState.phaseTraceId = phaseTraceId;
+          currentRunState.phaseNumber = phase.number;
+          currentRunState.phaseName = phase.name;
+        }
+
+        emit({ type: "phase_started", phase, iteration: 0, phaseTraceId });
+
+        const phaseResult = await runPhase(implConfig, phase, phaseTraceId, emit, rlog, runTaskState);
+        completePhaseTrace(
+          phaseTraceId,
+          "completed",
+          phaseResult.cost,
+          phaseResult.durationMs,
+          phaseResult.inputTokens || undefined,
+          phaseResult.outputTokens || undefined
+        );
+        cycleCost += phaseResult.cost;
+        implStageCost += phaseResult.cost;
+        implStageInputTokens += phaseResult.inputTokens;
+        implStageOutputTokens += phaseResult.outputTokens;
+
+        // Reconcile task state from disk
+        const freshPhases = parseTasksFile(config.projectDir, implSpecDir);
+        runTaskState.reconcileFromDisk(freshPhases);
+        emit({ type: "tasks_updated", phases: runTaskState.getPhases() });
+        emit({
+          type: "phase_completed",
+          phase: { ...phase, status: "complete" },
+          cost: phaseResult.cost,
+          durationMs: phaseResult.durationMs,
+        });
+      }
+
+      const implStageDurationMs = Date.now() - implStageStart;
+      const implAborted = abortController?.signal.aborted ?? false;
+      completePhaseTrace(implStageTraceId, implAborted ? "stopped" : "completed", implStageCost, implStageDurationMs, implStageInputTokens || undefined, implStageOutputTokens || undefined);
+
+      emit({
+        type: "stage_completed",
+        runId,
+        cycleNumber,
+        stage: "implement",
+        phaseTraceId: implStageTraceId,
+        costUsd: implStageCost,
+        durationMs: implStageDurationMs,
+        ...(implAborted ? { stopped: true } : {}),
+      });
+
+      if (implAborted) throw new AbortError();
+
+      // Verify (T033)
+      if (currentRunState) {
+        currentRunState.currentStage = "verify";
+      }
+      const verifyPrompt = buildVerifyPrompt(config, implSpecPath, fullPlanPath);
+      const verifyResult = await runStage(config, verifyPrompt, emit, rlog, runId, cycleNumber, "verify", implSpecDir);
+      cycleCost += verifyResult.cost;
+
+      if (abortController?.signal.aborted) throw new AbortError();
+
+      // Learnings (T034)
+      if (currentRunState) {
+        currentRunState.currentStage = "learnings";
+      }
+      const learningsPrompt = buildLearningsPrompt(config, implSpecPath);
+      const learningsResult = await runStage(config, learningsPrompt, emit, rlog, runId, cycleNumber, "learnings", implSpecDir);
+      cycleCost += learningsResult.cost;
+
+      // Success — reset failure counters
+      if (implSpecDir) {
+        const record = getOrCreateFailureRecord(implSpecDir);
+        record.implFailures = 0;
+        record.replanFailures = 0;
+        persistFailure(implSpecDir);
+      }
+
+      featuresCompleted.push(featureName ?? implSpecDir);
+
+    } catch (err) {
+      // AbortError is a clean exit — not a stage failure
+      if (err instanceof AbortError) {
+        rlog.run("INFO", `runLoop: cycle ${cycleNumber} aborted by user`);
+      } else {
+        // ── Stage failure handling (T040) ──
+        const msg = err instanceof Error ? err.message : String(err);
+        rlog.run("ERROR", `runLoop: cycle ${cycleNumber} failed: ${msg}`);
+
+        if (specDir) {
+          const record = getOrCreateFailureRecord(specDir);
+          // Determine which counter to increment based on the current stage
+          const currentStage = currentRunState?.currentStage;
+          if (currentStage === "plan" || currentStage === "tasks") {
+            record.replanFailures++;
+          } else {
+            record.implFailures++;
+          }
+          persistFailure(specDir);
+        }
+
+        emit({ type: "error", message: `Cycle ${cycleNumber} failed: ${msg}` });
+      }
+    }
+
+    cumulativeCost += cycleCost;
+    const cycleAborted = abortController?.signal.aborted ?? false;
+    const cycleStatus = cycleAborted ? "stopped" : "completed";
+    cyclesCompleted++;
+
+    updateLoopCycle(cycleId, cycleStatus, cycleCost, Date.now() - cycleStart);
+    updateRunLoopsCompleted(runId, cyclesCompleted);
+
+    if (currentRunState) {
+      currentRunState.loopsCompleted = cyclesCompleted;
+    }
+
+    emit({
+      type: "loop_cycle_completed",
+      runId,
+      cycleNumber,
+      decision: cycleAborted ? "stopped" : decisionType,
+      featureName,
+      specDir,
+      costUsd: cycleCost,
+    });
+
+    // Check termination conditions after cycle
+    if (abortController?.signal.aborted) break;
+    if (config.maxBudgetUsd && cumulativeCost >= config.maxBudgetUsd) break;
+    if (config.maxLoopCycles && cyclesCompleted >= config.maxLoopCycles) break;
+  }
+
+  // ── Termination (T042) ──
+  let terminationReason: TerminationReason = "gaps_complete";
+  if (abortController?.signal.aborted) {
+    terminationReason = "user_abort";
+  } else if (config.maxBudgetUsd && cumulativeCost >= config.maxBudgetUsd) {
+    terminationReason = "budget_exceeded";
+  } else if (config.maxLoopCycles && cyclesCompleted >= config.maxLoopCycles) {
+    terminationReason = "max_cycles_reached";
+  }
+
+  const termination: LoopTermination = {
+    reason: terminationReason,
+    cyclesCompleted,
+    totalCostUsd: cumulativeCost,
+    totalDurationMs: 0, // Will be set by caller
+    featuresCompleted,
+    featuresSkipped,
+  };
+
+  emit({ type: "loop_terminated", runId, termination });
+  rlog.run("INFO", `runLoop: terminated — reason=${terminationReason}, cycles=${cyclesCompleted}, features=${featuresCompleted.length}/${featuresSkipped.length}`);
+
+  return { phasesCompleted: cyclesCompleted, totalCost: cumulativeCost, baseBranch, branchName };
 }
 
 export function stopRun(): void {

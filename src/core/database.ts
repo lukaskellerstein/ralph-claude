@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import path from "node:path";
 import os from "node:os";
@@ -79,6 +80,52 @@ export function initDatabase(): void {
       ON subagent_metadata(phase_trace_id);
   `);
 
+  // Loop mode tables
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS loop_cycles (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(id),
+      cycle_number INTEGER NOT NULL,
+      feature_name TEXT,
+      spec_dir TEXT,
+      decision TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running',
+      cost_usd REAL DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_loop_cycles_run ON loop_cycles(run_id);
+
+    CREATE TABLE IF NOT EXISTS failure_tracker (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(id),
+      spec_dir TEXT NOT NULL,
+      impl_failures INTEGER DEFAULT 0,
+      replan_failures INTEGER DEFAULT 0,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_failure_tracker_run ON failure_tracker(run_id);
+  `);
+
+  // Add loop-mode columns to runs table (safe to run multiple times — SQLite ignores if exists)
+  const addColumnSafe = (table: string, column: string, type: string) => {
+    try {
+      db!.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    } catch {
+      // Column already exists
+    }
+  };
+
+  addColumnSafe("runs", "description", "TEXT");
+  addColumnSafe("runs", "full_plan_path", "TEXT");
+  addColumnSafe("runs", "max_loop_cycles", "INTEGER");
+  addColumnSafe("runs", "max_budget_usd", "REAL");
+  addColumnSafe("runs", "loops_completed", "INTEGER DEFAULT 0");
+  addColumnSafe("phase_traces", "loop_cycle_id", "TEXT");
+
   // Clean up orphaned "running" rows from prior crashes
   cleanupOrphanedRuns(db);
 }
@@ -92,6 +139,9 @@ function cleanupOrphanedRuns(database: Database.Database): void {
   const now = new Date().toISOString();
   database
     .prepare(`UPDATE phase_traces SET status = 'crashed', completed_at = ? WHERE status = 'running'`)
+    .run(now);
+  database
+    .prepare(`UPDATE loop_cycles SET status = 'crashed', completed_at = ? WHERE status = 'running'`)
     .run(now);
   database
     .prepare(`UPDATE runs SET status = 'crashed', completed_at = ? WHERE status = 'running'`)
@@ -217,6 +267,114 @@ export function completeSubagent(subagentId: string): void {
     .run(new Date().toISOString(), subagentId);
 }
 
+// ── Loop Cycles ──
+
+export function insertLoopCycle(cycle: {
+  id: string;
+  runId: string;
+  cycleNumber: number;
+  featureName: string | null;
+  specDir: string | null;
+  decision: string;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO loop_cycles (id, run_id, cycle_number, feature_name, spec_dir, decision, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`
+    )
+    .run(cycle.id, cycle.runId, cycle.cycleNumber, cycle.featureName, cycle.specDir, cycle.decision, new Date().toISOString());
+}
+
+export function updateLoopCycle(
+  cycleId: string,
+  status: string,
+  costUsd: number,
+  durationMs: number
+): void {
+  getDb()
+    .prepare(
+      `UPDATE loop_cycles SET status = ?, cost_usd = ?, duration_ms = ?, completed_at = ? WHERE id = ?`
+    )
+    .run(status, costUsd, durationMs, new Date().toISOString(), cycleId);
+}
+
+export interface LoopCycleRow {
+  id: string;
+  run_id: string;
+  cycle_number: number;
+  feature_name: string | null;
+  spec_dir: string | null;
+  decision: string;
+  status: string;
+  cost_usd: number | null;
+  duration_ms: number | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export function getLoopCycles(runId: string): LoopCycleRow[] {
+  return getDb()
+    .prepare(`SELECT * FROM loop_cycles WHERE run_id = ? ORDER BY cycle_number`)
+    .all(runId) as LoopCycleRow[];
+}
+
+// ── Failure Tracker ──
+
+export interface FailureTrackerRow {
+  id: string;
+  run_id: string;
+  spec_dir: string;
+  impl_failures: number;
+  replan_failures: number;
+  updated_at: string;
+}
+
+export function getFailureRecord(
+  runId: string,
+  specDir: string
+): FailureTrackerRow | null {
+  const row = getDb()
+    .prepare(`SELECT * FROM failure_tracker WHERE run_id = ? AND spec_dir = ?`)
+    .get(runId, specDir) as FailureTrackerRow | undefined;
+  return row ?? null;
+}
+
+export function upsertFailureRecord(
+  runId: string,
+  specDir: string,
+  implFailures: number,
+  replanFailures: number
+): void {
+  const existing = getFailureRecord(runId, specDir);
+  if (existing) {
+    getDb()
+      .prepare(
+        `UPDATE failure_tracker SET impl_failures = ?, replan_failures = ?, updated_at = ? WHERE id = ?`
+      )
+      .run(implFailures, replanFailures, new Date().toISOString(), existing.id);
+  } else {
+    const id = crypto.randomUUID();
+    getDb()
+      .prepare(
+        `INSERT INTO failure_tracker (id, run_id, spec_dir, impl_failures, replan_failures, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(id, runId, specDir, implFailures, replanFailures, new Date().toISOString());
+  }
+}
+
+export function resetFailures(runId: string, specDir: string): void {
+  upsertFailureRecord(runId, specDir, 0, 0);
+}
+
+// ── Loop Run Updates ──
+
+export function updateRunLoopsCompleted(runId: string, loopsCompleted: number): void {
+  getDb()
+    .prepare(`UPDATE runs SET loops_completed = ? WHERE id = ?`)
+    .run(loopsCompleted, runId);
+}
+
 // ── Queries (for history UI) ──
 
 export interface RunRow {
@@ -236,6 +394,7 @@ export interface RunRow {
 export interface PhaseTraceRow {
   id: string;
   run_id: string;
+  spec_dir: string | null;
   phase_number: number;
   phase_name: string;
   status: string;
@@ -267,6 +426,20 @@ export interface SubagentRow {
   description: string | null;
   started_at: string;
   completed_at: string | null;
+}
+
+export function getLatestProjectRun(projectDir: string): { run: RunRow; phases: PhaseTraceRow[]; loopCycles: LoopCycleRow[] } | null {
+  const run = getDb()
+    .prepare(`SELECT * FROM runs WHERE project_dir = ? ORDER BY created_at DESC LIMIT 1`)
+    .get(projectDir) as RunRow | undefined;
+  if (!run) return null;
+  const phases = getDb()
+    .prepare(`SELECT * FROM phase_traces WHERE run_id = ? ORDER BY phase_number, created_at`)
+    .all(run.id) as PhaseTraceRow[];
+  const loopCycleRows = getDb()
+    .prepare(`SELECT * FROM loop_cycles WHERE run_id = ? ORDER BY cycle_number`)
+    .all(run.id) as LoopCycleRow[];
+  return { run, phases, loopCycles: loopCycleRows };
 }
 
 export function listRuns(limit = 20): RunRow[] {
