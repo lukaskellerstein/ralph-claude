@@ -146,47 +146,8 @@ export function extractTaskIds(content: string): string[] {
   return ids;
 }
 
-// ── T014: Gap Analysis Result Parser ──
-
-import type { GapAnalysisDecision } from "./types.js";
-
-const GAP_DECISION_RE = /^(NEXT_FEATURE|RESUME_FEATURE|REPLAN_FEATURE|GAPS_COMPLETE)(?::\s*(.+))?$/m;
-
-export function parseGapAnalysisResult(output: string): GapAnalysisDecision {
-  const match = output.match(GAP_DECISION_RE);
-  if (!match) {
-    throw new Error(`Failed to parse gap analysis result. Output did not contain a valid decision line. Got: ${output.slice(0, 200)}`);
-  }
-
-  const [, decision, rest] = match;
-
-  switch (decision) {
-    case "NEXT_FEATURE": {
-      if (!rest) throw new Error("NEXT_FEATURE decision missing name and description");
-      const pipeIdx = rest.indexOf("|");
-      if (pipeIdx === -1) {
-        return { type: "NEXT_FEATURE", name: rest.trim(), description: rest.trim() };
-      }
-      return {
-        type: "NEXT_FEATURE",
-        name: rest.slice(0, pipeIdx).trim(),
-        description: rest.slice(pipeIdx + 1).trim(),
-      };
-    }
-    case "RESUME_FEATURE": {
-      if (!rest) throw new Error("RESUME_FEATURE decision missing specDir");
-      return { type: "RESUME_FEATURE", specDir: rest.trim() };
-    }
-    case "REPLAN_FEATURE": {
-      if (!rest) throw new Error("REPLAN_FEATURE decision missing specDir");
-      return { type: "REPLAN_FEATURE", specDir: rest.trim() };
-    }
-    case "GAPS_COMPLETE":
-      return { type: "GAPS_COMPLETE" };
-    default:
-      throw new Error(`Unknown gap analysis decision: ${decision}`);
-  }
-}
+// Gap analysis is now deterministic via the feature manifest (see manifest.ts).
+// The regex-based parseGapAnalysisResult and GAP_DECISION_RE have been removed.
 
 // ── T015: Discover New Spec Directory ──
 

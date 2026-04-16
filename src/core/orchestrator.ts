@@ -11,7 +11,7 @@ import type {
   SubagentInfo,
   Task,
 } from "./types.js";
-import { parseTasksFile, derivePhaseStatus, extractTaskIds, parseGapAnalysisResult, discoverNewSpecDir } from "./parser.js";
+import { parseTasksFile, derivePhaseStatus, extractTaskIds, discoverNewSpecDir } from "./parser.js";
 import {
   initDatabase,
   createRun,
@@ -55,15 +55,34 @@ import {
   buildProductClarificationPrompt,
   buildTechnicalClarificationPrompt,
   buildClarificationSynthesisPrompt,
-  buildGapAnalysisPrompt,
+  buildManifestExtractionPrompt,
+  buildFeatureEvaluationPrompt,
   buildConstitutionPrompt,
   buildSpecifyPrompt,
   buildLoopPlanPrompt,
   buildLoopTasksPrompt,
   buildImplementPrompt,
   buildVerifyPrompt,
+  buildVerifyFixPrompt,
   buildLearningsPrompt,
+  MANIFEST_SCHEMA,
+  GAP_ANALYSIS_SCHEMA,
+  VERIFY_SCHEMA,
+  LEARNINGS_SCHEMA,
+  SYNTHESIS_SCHEMA,
 } from "./prompts.js";
+import {
+  loadManifest,
+  saveManifest,
+  getNextFeature,
+  getActiveFeature,
+  updateFeatureStatus,
+  updateFeatureSpecDir,
+  checkSourceDrift,
+  hashFile as hashManifestFile,
+  appendLearnings,
+} from "./manifest.js";
+import type { FeatureManifest } from "./manifest.js";
 import type {
   LoopStageType,
   GapAnalysisDecision,
@@ -878,14 +897,16 @@ async function runStage(
   runId: string,
   cycleNumber: number,
   stageType: import("./types.js").LoopStageType,
-  specDir?: string
-): Promise<{ result: string; cost: number; durationMs: number; inputTokens: number; outputTokens: number }> {
+  specDir?: string,
+  outputFormat?: { type: "json_schema"; schema: Record<string, unknown> }
+): Promise<{ result: string; structuredOutput: unknown | null; cost: number; durationMs: number; inputTokens: number; outputTokens: number }> {
   const startTime = Date.now();
   let stepIndex = 0;
   let totalCost = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
   let resultText = "";
+  let structuredOutput: unknown | null = null;
   const knownSubagentIds = new Set<string>();
   const activeSubagentSet = new Set<string>();
 
@@ -946,6 +967,7 @@ async function runStage(
       maxTurns: config.maxTurns,
       permissionMode: "bypassPermissions",
       settingSources: ["project"],
+      ...(outputFormat ? { outputFormat } : {}),
       canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
         if (toolName === "AskUserQuestion") {
           rlog.phase("INFO", "canUseTool: AskUserQuestion intercepted");
@@ -1136,6 +1158,19 @@ async function runStage(
         if (typeof resultUsage.output_tokens === "number") totalOutputTokens = resultUsage.output_tokens;
       }
       if (typeof message.result === "string") resultText = message.result;
+
+      // Structured output handling
+      if (outputFormat) {
+        if (message.subtype === "error_max_structured_output_retries") {
+          rlog.phase("ERROR", `runStage(${stageType}): structured output validation failed after max retries`);
+          throw new Error(`Structured output validation failed for ${stageType} — agent could not produce valid JSON matching the schema`);
+        }
+        structuredOutput = (message as Record<string, unknown>).structured_output ?? null;
+        if (structuredOutput === null) {
+          rlog.phase("WARN", `runStage(${stageType}): outputFormat requested but structured_output is null — falling back to raw text`);
+        }
+      }
+
       rlog.phase("INFO", `runStage: ${stageType} result received`, {
         cost: totalCost,
         resultPreview: resultText.slice(0, 200),
@@ -1184,7 +1219,7 @@ async function runStage(
     }
   }
 
-  return { result: resultText, cost: totalCost, durationMs, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+  return { result: resultText, structuredOutput, cost: totalCost, durationMs, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
 }
 
 // ── Build Mode Runner (extracted from run()) ──
@@ -1992,14 +2027,29 @@ async function runLoop(
       emitSkippedStage("clarification_technical");
     }
 
-    // Step 3: Synthesis → GOAL_clarified.md + CLAUDE.md
+    // Step 3: Synthesis → GOAL_clarified.md + CLAUDE.md (with structured confirmation)
     if (abortController?.signal.aborted) throw new AbortError();
     if (!fs.existsSync(clarifiedPath)) {
       rlog.run("INFO", "runLoop: starting clarification synthesis");
       const prompt = buildClarificationSynthesisPrompt(goalPath, productDomainPath, technicalDomainPath);
-      const result = await runStage(config, prompt, emit, rlog, runId, 0, "clarification_synthesis");
+      const result = await runStage(
+        config, prompt, emit, rlog, runId, 0, "clarification_synthesis", undefined,
+        { type: "json_schema", schema: SYNTHESIS_SCHEMA as unknown as Record<string, unknown> }
+      );
       cumulativeCost += result.cost;
       if (abortController?.signal.aborted) throw new AbortError();
+
+      // Try structured output first, fall back to filesystem probing
+      const synthesisOutput = result.structuredOutput as { filesProduced?: string[]; goalClarifiedPath?: string } | null;
+      if (synthesisOutput?.goalClarifiedPath) {
+        const resolvedPath = path.isAbsolute(synthesisOutput.goalClarifiedPath)
+          ? synthesisOutput.goalClarifiedPath
+          : path.join(config.projectDir, synthesisOutput.goalClarifiedPath);
+        if (!fs.existsSync(resolvedPath)) {
+          rlog.run("WARN", `Synthesis structured output claimed ${synthesisOutput.goalClarifiedPath} but file not found — falling back to filesystem check`);
+        }
+      }
+
       if (!fs.existsSync(clarifiedPath)) {
         throw new Error("Synthesis completed but GOAL_clarified.md not found");
       }
@@ -2035,6 +2085,55 @@ async function runLoop(
     }
   }
 
+  // ── Manifest Extraction (one-time after clarification) ──
+
+  let manifest = loadManifest(config.projectDir);
+  if (!manifest) {
+    type ManifestExtraction = { features: Array<{ id: number; title: string; description: string }> };
+    let extracted: ManifestExtraction | null = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const prompt = buildManifestExtractionPrompt(fullPlanPath);
+        const result = await runStage(
+          config, prompt, emit, rlog, runId, 0,
+          "manifest_extraction", undefined,
+          { type: "json_schema", schema: MANIFEST_SCHEMA as unknown as Record<string, unknown> }
+        );
+        cumulativeCost += result.cost;
+        extracted = result.structuredOutput as ManifestExtraction | null;
+        if (!extracted) {
+          rlog.run("WARN", `Manifest extraction attempt ${attempt}: structured_output was null`);
+          if (attempt === 2) throw new Error("Manifest extraction failed after 2 attempts — structured output was null. Check GOAL_clarified.md format.");
+          continue;
+        }
+        if (!extracted.features?.length) {
+          rlog.run("WARN", `Manifest extraction attempt ${attempt}: empty features array`);
+          if (attempt === 2) throw new Error("Manifest extraction failed after 2 attempts — extracted zero features. Check GOAL_clarified.md format.");
+          continue;
+        }
+        break;
+      } catch (err) {
+        rlog.run("ERROR", `Manifest extraction attempt ${attempt} failed: ${err instanceof Error ? err.message : String(err)}`);
+        if (attempt === 2) throw new Error("Manifest extraction failed after 2 attempts — cannot proceed without a feature manifest. Check GOAL_clarified.md format.");
+      }
+    }
+    manifest = {
+      version: 1,
+      sourceHash: hashManifestFile(fullPlanPath),
+      features: extracted!.features.map((f) => ({
+        ...f,
+        status: "pending" as const,
+        specDir: null,
+      })),
+    };
+    saveManifest(config.projectDir, manifest);
+    emit({ type: "manifest_created", runId, featureCount: manifest.features.length });
+    rlog.run("INFO", `runLoop: manifest created with ${manifest.features.length} features`);
+  } else if (checkSourceDrift(config.projectDir, manifest, fullPlanPath)) {
+    rlog.run("WARN", "GOAL_clarified.md has changed since manifest was created");
+    emit({ type: "manifest_drift_detected", runId });
+  }
+
   // ── Phase B: Autonomous Loop ──
 
   while (true) {
@@ -2067,33 +2166,77 @@ async function runLoop(
       currentRunState.currentCycle = cycleNumber;
     }
 
-    // ── Gap Analysis (T029) ──
-    // On resume, skip gap analysis for the first cycle — we already know
-    // which spec to resume (from the previous run's data).
+    // ── Gap Analysis — Deterministic Manifest Walk ──
     let decision: GapAnalysisDecision;
     if (resumeSpecDir && cycleNumber === cyclesCompleted + 1) {
       decision = { type: "RESUME_FEATURE", specDir: resumeSpecDir };
       rlog.run("INFO", `runLoop: resume — skipping gap analysis, using RESUME_FEATURE for ${resumeSpecDir}`);
-      // Emit synthetic gap_analysis stage so UI shows it as completed
       const traceId = crypto.randomUUID();
       createPhaseTrace({ id: traceId, runId, specDir: resumeSpecDir, phaseNumber: cycleNumber, phaseName: "loop:gap_analysis" });
       emit({ type: "stage_started", runId, cycleNumber, stage: "gap_analysis", phaseTraceId: traceId });
       completePhaseTrace(traceId, "completed", 0, 0);
       emit({ type: "stage_completed", runId, cycleNumber, stage: "gap_analysis", phaseTraceId: traceId, costUsd: 0, durationMs: 0 });
-      // Clear resumeSpecDir so subsequent cycles run gap analysis normally
       resumeSpecDir = null;
     } else {
       try {
-        const existingSpecs = listSpecDirs(config.projectDir);
-        const prompt = buildGapAnalysisPrompt(config, fullPlanPath, existingSpecs);
+        const manifest = loadManifest(config.projectDir);
+        if (!manifest) {
+          throw new Error("Feature manifest not found — manifest extraction should have run before the loop");
+        }
 
         if (currentRunState) {
           currentRunState.currentStage = "gap_analysis";
         }
 
-        const gapResult = await runStage(config, prompt, emit, rlog, runId, cycleNumber, "gap_analysis");
-        cumulativeCost += gapResult.cost;
-        decision = parseGapAnalysisResult(gapResult.result);
+        const active = getActiveFeature(manifest);
+        const nextPending = getNextFeature(manifest);
+
+        if (active) {
+          if (active.specDir) {
+            // Active feature with specDir — evaluate RESUME vs REPLAN
+            const evaluationPrompt = buildFeatureEvaluationPrompt(config, active.specDir);
+            const evalResult = await runStage(
+              config, evaluationPrompt, emit, rlog, runId, cycleNumber,
+              "gap_analysis", active.specDir,
+              { type: "json_schema", schema: GAP_ANALYSIS_SCHEMA as unknown as Record<string, unknown> }
+            );
+            cumulativeCost += evalResult.cost;
+            const evaluation = evalResult.structuredOutput as { decision: string; reason: string } | null;
+            if (!evaluation) {
+              throw new Error(`Gap analysis for ${active.specDir} returned null structured output — cannot determine RESUME vs REPLAN`);
+            }
+            if (evaluation.decision === "REPLAN_FEATURE") {
+              decision = { type: "REPLAN_FEATURE", specDir: active.specDir };
+            } else {
+              decision = { type: "RESUME_FEATURE", specDir: active.specDir };
+            }
+          } else {
+            // Active but no specDir — re-run specify
+            decision = {
+              type: "NEXT_FEATURE",
+              name: active.title,
+              description: active.description,
+              featureId: active.id,
+            };
+          }
+        } else if (nextPending) {
+          // Deterministic — no LLM call needed
+          updateFeatureStatus(config.projectDir, nextPending.id, "active");
+          // Emit synthetic gap_analysis stage
+          const traceId = crypto.randomUUID();
+          createPhaseTrace({ id: traceId, runId, specDir: "", phaseNumber: cycleNumber, phaseName: "loop:gap_analysis" });
+          emit({ type: "stage_started", runId, cycleNumber, stage: "gap_analysis", phaseTraceId: traceId });
+          completePhaseTrace(traceId, "completed", 0, 0);
+          emit({ type: "stage_completed", runId, cycleNumber, stage: "gap_analysis", phaseTraceId: traceId, costUsd: 0, durationMs: 0 });
+          decision = {
+            type: "NEXT_FEATURE",
+            name: nextPending.title,
+            description: nextPending.description,
+            featureId: nextPending.id,
+          };
+        } else {
+          decision = { type: "GAPS_COMPLETE" };
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         rlog.run("ERROR", `runLoop: gap analysis failed: ${msg}`);
@@ -2139,6 +2282,12 @@ async function runLoop(
       const record = getOrCreateFailureRecord(specDir);
       if (record.replanFailures >= 3) {
         rlog.run("WARN", `runLoop: skipping feature at ${specDir} — 3 replan failures`);
+        // Mark feature as skipped in manifest
+        const skipManifest = loadManifest(config.projectDir);
+        if (skipManifest) {
+          const skipEntry = skipManifest.features.find((f) => f.specDir === specDir);
+          if (skipEntry) updateFeatureStatus(config.projectDir, skipEntry.id, "skipped");
+        }
         featuresSkipped.push(specDir);
         updateLoopCycle(cycleId, "skipped", 0, Date.now() - cycleStart);
         emit({
@@ -2150,6 +2299,13 @@ async function runLoop(
           specDir,
           costUsd: 0,
         });
+        // Update FeatureArtifacts.status to "skipped"
+        if (activeProjectDir && specDir) {
+          updateState(activeProjectDir, {
+            artifacts: { features: { [specDir]: { status: "skipped" } } },
+            featuresSkipped: [...featuresSkipped],
+          } as never).catch(() => {});
+        }
         cyclesCompleted++;
         updateRunLoopsCompleted(runId, cyclesCompleted);
         continue;
@@ -2178,18 +2334,26 @@ async function runLoop(
           currentRunState.currentStage = "specify";
         }
         const knownSpecs = listSpecDirs(config.projectDir);
-        const specifyPrompt = buildSpecifyPrompt(config, decision.name, decision.description);
+        const specifyPrompt = buildSpecifyPrompt(decision.name, decision.description);
         const specifyResult = await runStage(config, specifyPrompt, emit, rlog, runId, cycleNumber, "specify");
         cycleCost += specifyResult.cost;
 
         if (abortController?.signal.aborted) throw new AbortError();
 
-        // Discover the newly created spec directory
+        // Discover the newly created spec directory and link to manifest
         specDir = discoverNewSpecDir(config.projectDir, knownSpecs);
         if (!specDir) {
           throw new Error("Specify completed but no new spec directory was created");
         }
         rlog.run("INFO", `runLoop: new spec directory: ${specDir}`);
+        updateFeatureSpecDir(config.projectDir, decision.featureId, specDir);
+
+        // Update FeatureArtifacts.status to "specifying"
+        if (activeProjectDir) {
+          updateState(activeProjectDir, {
+            artifacts: { features: { [specDir]: { specDir, status: "specifying", spec: null, plan: null, tasks: null, lastImplementedPhase: 0 } } },
+          } as never).catch(() => {});
+        }
       }
 
       // Plan (T031) — for NEXT_FEATURE and REPLAN_FEATURE
@@ -2203,6 +2367,12 @@ async function runLoop(
 
         if (currentRunState) {
           currentRunState.currentStage = "plan";
+        }
+        // Update FeatureArtifacts.status to "planning"
+        if (activeProjectDir && targetSpecDir) {
+          updateState(activeProjectDir, {
+            artifacts: { features: { [targetSpecDir]: { status: "planning" } } },
+          } as never).catch(() => {});
         }
         const planPrompt = buildLoopPlanPrompt(config, specPath);
         const planResult = await runStage(config, planPrompt, emit, rlog, runId, cycleNumber, "plan", targetSpecDir);
@@ -2230,6 +2400,12 @@ async function runLoop(
       if (currentRunState) {
         currentRunState.currentStage = "implement";
         currentRunState.specDir = implSpecDir;
+      }
+      // Update FeatureArtifacts.status to "implementing"
+      if (activeProjectDir && implSpecDir) {
+        updateState(activeProjectDir, {
+          artifacts: { features: { [implSpecDir]: { status: "implementing" } } },
+        } as never).catch(() => {});
       }
 
       // Create a stage-level phase trace so the UI shows implement in the stage list
@@ -2330,30 +2506,129 @@ async function runLoop(
 
       if (implAborted) throw new AbortError();
 
-      // Verify (T033)
+      // Verify — structured output with fix-reverify loop
       if (currentRunState) {
         currentRunState.currentStage = "verify";
       }
+      // Update FeatureArtifacts.status to "verifying"
+      if (activeProjectDir && implSpecDir) {
+        updateState(activeProjectDir, {
+          artifacts: { features: { [implSpecDir]: { status: "verifying" } } },
+        } as never).catch(() => {});
+      }
       const verifyPrompt = buildVerifyPrompt(config, implSpecPath, fullPlanPath);
-      const verifyResult = await runStage(config, verifyPrompt, emit, rlog, runId, cycleNumber, "verify", implSpecDir);
+      const verifyResult = await runStage(
+        config, verifyPrompt, emit, rlog, runId, cycleNumber, "verify", implSpecDir,
+        { type: "json_schema", schema: VERIFY_SCHEMA as unknown as Record<string, unknown> }
+      );
       cycleCost += verifyResult.cost;
+
+      type VerifyOutput = {
+        passed: boolean;
+        buildSucceeded: boolean;
+        testsSucceeded: boolean;
+        failures: Array<{ criterion: string; description: string; severity: string }>;
+        summary: string;
+      };
+
+      let verification: VerifyOutput = (verifyResult.structuredOutput as VerifyOutput | null) ?? {
+        passed: false,
+        buildSucceeded: false,
+        testsSucceeded: false,
+        failures: [{ criterion: "structured_output", description: "Verify agent did not return structured output", severity: "blocking" }],
+        summary: "Verification could not be evaluated — structured output was null",
+      };
+
+      if (!verification.passed) {
+        const blockingFailures = verification.failures.filter((f) => f.severity === "blocking");
+        if (blockingFailures.length > 0) {
+          const maxRetries = config.maxVerifyRetries ?? 1;
+          for (let retryNum = 1; retryNum <= maxRetries; retryNum++) {
+            const currentBlocking = verification.failures.filter((f) => f.severity === "blocking");
+            rlog.run("WARN", `runLoop: verify found ${currentBlocking.length} blocking failure(s) — fix attempt ${retryNum}/${maxRetries}`);
+            emit({ type: "verify_failed", runId, cycleNumber, blockingCount: currentBlocking.length, summary: verification.summary });
+
+            if (abortController?.signal.aborted) throw new AbortError();
+
+            const fixPrompt = buildVerifyFixPrompt(config, implSpecPath, currentBlocking);
+            const fixResult = await runStage(config, fixPrompt, emit, rlog, runId, cycleNumber, "implement_fix", implSpecDir);
+            cycleCost += fixResult.cost;
+
+            if (abortController?.signal.aborted) throw new AbortError();
+
+            const reVerifyResult = await runStage(
+              config, verifyPrompt, emit, rlog, runId, cycleNumber, "verify", implSpecDir,
+              { type: "json_schema", schema: VERIFY_SCHEMA as unknown as Record<string, unknown> }
+            );
+            cycleCost += reVerifyResult.cost;
+
+            verification = (reVerifyResult.structuredOutput as VerifyOutput | null) ?? {
+              passed: false,
+              buildSucceeded: false,
+              testsSucceeded: false,
+              failures: [{ criterion: "structured_output", description: "Re-verify agent did not return structured output", severity: "blocking" }],
+              summary: "Re-verification could not be evaluated — structured output was null",
+            };
+
+            if (verification.passed) {
+              rlog.run("INFO", `runLoop: re-verify passed on attempt ${retryNum}`);
+              break;
+            }
+            if (retryNum === maxRetries) {
+              rlog.run("WARN", `runLoop: re-verify still failing after ${maxRetries} fix attempt(s) — proceeding to learnings`);
+            }
+          }
+        }
+      }
 
       if (abortController?.signal.aborted) throw new AbortError();
 
-      // Learnings (T034)
+      // Learnings — structured output with dedup
       if (currentRunState) {
         currentRunState.currentStage = "learnings";
       }
       const learningsPrompt = buildLearningsPrompt(config, implSpecPath);
-      const learningsResult = await runStage(config, learningsPrompt, emit, rlog, runId, cycleNumber, "learnings", implSpecDir);
+      const learningsResult = await runStage(
+        config, learningsPrompt, emit, rlog, runId, cycleNumber, "learnings", implSpecDir,
+        { type: "json_schema", schema: LEARNINGS_SCHEMA as unknown as Record<string, unknown> }
+      );
       cycleCost += learningsResult.cost;
 
-      // Success — reset failure counters
+      const learnings = learningsResult.structuredOutput as {
+        insights: Array<{ category: string; insight: string; context: string }>;
+      } | null;
+
+      if (learnings?.insights?.length) {
+        appendLearnings(config.projectDir, learnings.insights, config.maxLearningsPerCategory);
+      } else if (!learnings) {
+        rlog.run("WARN", "runLoop: learnings structured output was null — skipping append");
+      }
+
+      // Success — reset failure counters and update manifest
       if (implSpecDir) {
         const record = getOrCreateFailureRecord(implSpecDir);
         record.implFailures = 0;
         record.replanFailures = 0;
         persistFailure(implSpecDir);
+      }
+
+      // Mark feature as completed in manifest and FeatureArtifacts if verify passed
+      if (verification.passed) {
+        if (decision.type === "NEXT_FEATURE") {
+          updateFeatureStatus(config.projectDir, decision.featureId, "completed");
+        } else if (implSpecDir) {
+          const currentManifest = loadManifest(config.projectDir);
+          if (currentManifest) {
+            const entry = currentManifest.features.find((f) => f.specDir === implSpecDir);
+            if (entry) updateFeatureStatus(config.projectDir, entry.id, "completed");
+          }
+        }
+        // Update FeatureArtifacts.status to "completed"
+        if (activeProjectDir && implSpecDir) {
+          updateState(activeProjectDir, {
+            artifacts: { features: { [implSpecDir]: { status: "completed" } } },
+          } as never).catch(() => {});
+        }
       }
 
       featuresCompleted.push(featureName ?? implSpecDir);

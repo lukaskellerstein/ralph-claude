@@ -72,6 +72,17 @@ export function useProject() {
     return dir;
   };
 
+  const openProjectPath = async (projectPath: string): Promise<{ path: string } | { error: string }> => {
+    const result = await window.dexAPI.openProjectPath(projectPath);
+    if ("path" in result) {
+      setProjectDir(result.path);
+      setSelectedSpec(null);
+      setPhases([]);
+      await loadSpecs(result.path);
+    }
+    return result;
+  };
+
   const createProject = async (parentDir: string, name: string): Promise<{ path: string } | { error: string }> => {
     const result = await window.dexAPI.createProject(parentDir, name);
     if ("path" in result) {
@@ -169,6 +180,7 @@ export function useProject() {
     aggregate,
     clearProject,
     openProject,
+    openProjectPath,
     createProject,
     refreshProject,
     selectSpec,

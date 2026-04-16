@@ -1,5 +1,98 @@
 import type { RunConfig, Phase } from "./types.js";
 
+// ── Structured Output Schemas ──
+
+export const MANIFEST_SCHEMA = {
+  type: "object",
+  properties: {
+    features: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "number", description: "Feature number from the priority table (1, 2, 3...)" },
+          title: { type: "string", description: "Feature name from the priority table" },
+          description: { type: "string", description: "Rich description including user stories, acceptance criteria, relevant data model entities, and scope constraints" },
+        },
+        required: ["id", "title", "description"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["features"],
+  additionalProperties: false,
+} as const;
+
+export const GAP_ANALYSIS_SCHEMA = {
+  type: "object",
+  properties: {
+    decision: { type: "string", enum: ["RESUME_FEATURE", "REPLAN_FEATURE"] },
+    reason: { type: "string" },
+  },
+  required: ["decision", "reason"],
+  additionalProperties: false,
+} as const;
+
+export const VERIFY_SCHEMA = {
+  type: "object",
+  properties: {
+    passed: { type: "boolean", description: "true if ALL acceptance criteria pass and build/tests succeed" },
+    buildSucceeded: { type: "boolean", description: "true if the project compiles without errors" },
+    testsSucceeded: { type: "boolean", description: "true if all tests pass (or no tests exist)" },
+    failures: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          criterion: { type: "string", description: "The acceptance criterion or check that failed" },
+          description: { type: "string", description: "What went wrong and what was expected" },
+          severity: { type: "string", enum: ["blocking", "minor"] },
+        },
+        required: ["criterion", "description", "severity"],
+        additionalProperties: false,
+      },
+    },
+    summary: { type: "string", description: "One-paragraph summary of verification results" },
+  },
+  required: ["passed", "buildSucceeded", "testsSucceeded", "failures", "summary"],
+  additionalProperties: false,
+} as const;
+
+export const LEARNINGS_SCHEMA = {
+  type: "object",
+  properties: {
+    insights: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          category: { type: "string", enum: ["build", "testing", "api", "architecture", "tooling", "workaround"] },
+          insight: { type: "string", description: "One-line actionable insight" },
+          context: { type: "string", description: "Brief context for when this applies" },
+        },
+        required: ["category", "insight", "context"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["insights"],
+  additionalProperties: false,
+} as const;
+
+export const SYNTHESIS_SCHEMA = {
+  type: "object",
+  properties: {
+    filesProduced: {
+      type: "array",
+      items: { type: "string" },
+      description: "Relative paths of files created or updated during synthesis",
+    },
+    goalClarifiedPath: { type: "string", description: "Relative path to the clarified goal file" },
+  },
+  required: ["filesProduced", "goalClarifiedPath"],
+  additionalProperties: false,
+} as const;
+
 // ── T005a: Product Domain Clarification Prompt ──
 
 export function buildProductClarificationPrompt(goalFilePath: string): string {
@@ -146,54 +239,85 @@ Keep CLAUDE.md concise and directive — it's an instruction file, not documenta
 - After writing both files, output the absolute path to GOAL_clarified.md as the final line of your response.`;
 }
 
-// ── T006: Gap Analysis Prompt ──
+// ── Manifest Extraction Prompt ──
 
-export function buildGapAnalysisPrompt(
+export function buildManifestExtractionPrompt(goalPath: string): string {
+  return `Read the project plan at ${goalPath}. Extract every MVP feature listed in the feature priority table.
+
+For each feature, produce:
+- id: the feature number from the table (1, 2, 3...)
+- title: the feature name exactly as it appears in the table (e.g., "Product Catalog")
+- description: a rich, self-contained description that includes:
+  - The one-line description from the priority table
+  - All related user stories with their full acceptance criteria
+  - Relevant data model entities and their relationships
+  - Any scope constraints or out-of-scope items that apply to this feature
+
+The description must be detailed enough that someone reading ONLY that description can write a complete feature specification. Do NOT include technology stack details — focus on WHAT the feature does, not HOW it is built.
+
+Process features in the exact order they appear in the priority table. Do not skip features. Do not invent new features.`;
+}
+
+// ── Feature Evaluation Prompt (RESUME vs REPLAN) ──
+
+export function buildFeatureEvaluationPrompt(
   config: RunConfig,
-  fullPlanPath: string,
-  existingSpecs: string[]
+  specDir: string
 ): string {
-  const specList = existingSpecs.length > 0
-    ? existingSpecs.map((s) => `  - ${s}`).join("\n")
-    : "  (none yet)";
-
-  return `You are a gap analysis agent for the Dex autonomous loop. Your job is to compare the full project plan against existing feature specifications and determine what to do next.
+  return `You are evaluating whether a partially-completed feature should be resumed or replanned.
 
 ## Instructions
 
-1. Read the full plan at: ${fullPlanPath}
-2. Review each existing spec directory listed below for completeness (check for spec.md, plan.md, tasks.md, and implementation status)
-3. Determine the next action
+1. Read the spec at: ${specDir}/spec.md
+2. Read the plan at: ${specDir}/plan.md
+3. Read the tasks at: ${specDir}/tasks.md
+4. Check the current state of the implementation — which tasks are done, which remain
+5. Assess whether the existing plan is still viable or needs replanning
 
-## Existing Spec Directories
+## Decision criteria
 
-${specList}
+Choose RESUME_FEATURE if:
+- The plan is sound and remaining tasks are clearly defined
+- Progress has been made and continuing makes sense
+- No fundamental design issues have been discovered
+
+Choose REPLAN_FEATURE if:
+- The plan has structural problems that make remaining tasks unworkable
+- Key assumptions in the plan turned out to be wrong
+- The implementation has diverged significantly from the plan
 
 ## Project Directory
 
-${config.projectDir}
+${config.projectDir}`;
+}
 
-## Decision Rules
+// ── Verify Fix Prompt ──
 
-- If a feature in the full plan has NO corresponding spec directory: output \`NEXT_FEATURE: {feature_name} | {one-line description}\`
-- If a feature has a spec directory with tasks.md but incomplete implementation: output \`RESUME_FEATURE: {spec_dir_relative_path}\`
-- If a feature's implementation has failed and needs re-planning: output \`REPLAN_FEATURE: {spec_dir_relative_path}\`
-- If ALL features in the full plan have been implemented and verified: output \`GAPS_COMPLETE\`
+export function buildVerifyFixPrompt(
+  config: RunConfig,
+  specDir: string,
+  failures: Array<{ criterion: string; description: string; severity: string }>
+): string {
+  const failureList = failures
+    .map((f, i) => `${i + 1}. **${f.criterion}**: ${f.description}`)
+    .join("\n");
 
-## Scope Constraints
+  return `You are a fix agent. The verification stage found blocking failures in the implementation at ${specDir}.
 
-- Only consider features explicitly described in GOAL.md
-- Do not invent new features or expand scope
-- Process features in the order they appear in the plan
+## Failures to fix
 
-## Output Format
+${failureList}
 
-Output EXACTLY ONE of these lines as your final output (no markdown formatting, no code blocks):
+## Instructions
 
-NEXT_FEATURE: {name} | {description}
-RESUME_FEATURE: {specDir}
-REPLAN_FEATURE: {specDir}
-GAPS_COMPLETE`;
+1. Read the relevant code and spec
+2. Fix each blocking failure
+3. Run the build to verify your fixes compile
+4. Do not introduce new features — only fix the listed failures
+
+## Project Directory
+
+${config.projectDir}`;
 }
 
 // ── T007: Constitution Prompt ──
@@ -207,19 +331,13 @@ export function buildConstitutionPrompt(
 Read the full project plan at ${fullPlanPath} and the project instructions at ${config.projectDir}/CLAUDE.md for detailed technical context about the project being built. The project directory is ${config.projectDir}.`;
 }
 
-// ── T008: Specify Prompt ──
+// ── Specify Prompt ──
 
 export function buildSpecifyPrompt(
-  config: RunConfig,
   featureName: string,
   featureDescription: string
 ): string {
-  return `/speckit-specify
-
-Feature name: ${featureName}
-Feature description: ${featureDescription}
-
-Project directory: ${config.projectDir}`;
+  return `/speckit-specify ${featureName}: ${featureDescription}`;
 }
 
 // ── T009: Loop Plan Prompt ──
@@ -240,7 +358,7 @@ export function buildLoopTasksPrompt(
   return `/speckit-tasks ${specPath}`;
 }
 
-// ── T011: Verify Prompt ──
+// ── Verify Prompt ──
 
 export function buildVerifyPrompt(
   config: RunConfig,
@@ -265,11 +383,12 @@ ${config.projectDir}
 
 ## Output
 
-Report what passed and what failed. If everything passes, confirm verification is complete.
-If there are failures, describe each failure clearly so the next cycle can fix them.`;
+Your structured output must accurately reflect what you observed. Set passed=true ONLY if the build succeeds, tests pass, AND all acceptance criteria are met. For each failure, classify severity:
+- "blocking": the feature is incomplete or broken — must fix before marking complete
+- "minor": cosmetic issues, missing polish, non-critical deviations`;
 }
 
-// ── T012: Learnings Prompt ──
+// ── Learnings Prompt ──
 
 export function buildLearningsPrompt(
   config: RunConfig,
@@ -281,7 +400,7 @@ export function buildLearningsPrompt(
 
 1. Read the spec, plan, and implementation files in ${specDir}
 2. Identify patterns that worked well or caused problems
-3. Update \`.claude/rules/learnings.md\` with operational insights that will help future cycles
+3. Return structured insights — do NOT modify any files directly
 
 ## Project Directory
 
@@ -292,8 +411,9 @@ ${config.projectDir}
 - Focus on actionable, project-specific insights
 - Note any workarounds or gotchas discovered
 - Record technology-specific patterns (build quirks, API behaviors)
-- Keep entries concise — one line per insight
-- Append to existing content, don't overwrite`;
+- Each insight should be one concise line
+- Categorize each insight: build, testing, api, architecture, tooling, or workaround
+- Include brief context for when the insight applies`;
 }
 
 // ── T013: Implement Prompt ──

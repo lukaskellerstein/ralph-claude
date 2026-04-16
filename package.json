@@ -10,7 +10,7 @@
     "build:start": "npm run build && npm start"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.1.45",
     "better-sqlite3": "^12.9.0",
     "electron": "^41.2.1",
     "gsap": "^3.12.5",

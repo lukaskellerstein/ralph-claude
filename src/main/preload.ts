@@ -14,6 +14,10 @@ contextBridge.exposeInMainWorld("dexAPI", {
     ipcRenderer.invoke("project:pick-folder") as Promise<string | null>,
   createProject: (parentDir: string, name: string) =>
     ipcRenderer.invoke("project:create-project", parentDir, name) as Promise<{ path: string } | { error: string }>,
+  openProjectPath: (projectPath: string) =>
+    ipcRenderer.invoke("project:open-path", projectPath) as Promise<{ path: string } | { error: string }>,
+  pathExists: (targetPath: string) =>
+    ipcRenderer.invoke("project:path-exists", targetPath) as Promise<boolean>,
 
   // Orchestrator
   startRun: (config: Record<string, unknown>) =>

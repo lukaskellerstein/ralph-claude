@@ -1,5 +1,5 @@
 ---
-description: "Step 4: Testing — define DoD, test with MCP tools against Electron (CDP port 9222), fix and repeat until passing"
+description: "Step 4: Testing — define DoD, reset the example project, drive the app via electron-chrome MCP, fix and repeat until passing"
 ---
 
 # Step 4: Testing
@@ -25,16 +25,78 @@ One chrome-devtools MCP server is configured in `.mcp.json`:
 
 Tools available: `mcp__electron-chrome__take_snapshot`, `mcp__electron-chrome__take_screenshot`, `mcp__electron-chrome__click`, `mcp__electron-chrome__evaluate_script`, `mcp__electron-chrome__fill`, `mcp__electron-chrome__navigate_page`, etc.
 
-## 4c. Test
+## 4c. Example project for end-to-end testing
 
-**UI / Renderer changes** — use `electron-chrome` MCP (CDP port 9222):
+For any test that exercises the full loop (welcome screen → loop start → autonomous run), drive the app against the **dex-ecommerce** example project.
+
+| Field | Value |
+|---|---|
+| Parent path | `/home/lukas/Projects/Github/lukaskellerstein` |
+| Project name | `dex-ecommerce` |
+| Full path | `/home/lukas/Projects/Github/lukaskellerstein/dex-ecommerce` |
+
+### Step 1 — Reset the example project
+
+The repo is a GitHub project. Before every test run, bring it back to a clean state: only `GOAL.md` tracked on `main`, no feature branches checked out, no leftover `.dex/` / `.specify/` / `.claude/` from prior runs. Running the loop will create its own branch automatically — do **not** create one manually.
+
+```bash
+cd /home/lukas/Projects/Github/lukaskellerstein/dex-ecommerce
+git checkout main
+git reset --hard HEAD
+git clean -fdx
+```
+
+Sanity check — after reset, `git status` must be clean and `ls` must show only `GOAL.md` and `.git/`:
+
+```bash
+cd /home/lukas/Projects/Github/lukaskellerstein/dex-ecommerce && git status --short && ls
+```
+
+These destructive git commands are **authorized as part of the testing protocol**. You do not need to ask before running them against `dex-ecommerce`. Never run them against any other repo.
+
+### Step 2 — Ensure the dev server is running
+
+Check `electron-chrome` MCP connectivity via `mcp__electron-chrome__list_pages`. If it fails, `dev-setup.sh` is not running.
+
+### Step 3 — Fill the welcome screen
+
+The welcome screen inputs have stable `data-testid` attributes:
+
+| Testid | Purpose |
+|---|---|
+| `welcome-path` | Parent path input |
+| `welcome-name` | Project name input |
+| `welcome-pick-folder` | Native folder-picker button (do not click — native dialog is opaque to MCP) |
+| `welcome-submit` | Dynamic submit button (label toggles `New` / `Open Existing` based on `fs.existsSync(path/name)`) |
+
+Fill and submit:
+
+1. Snapshot with `mcp__electron-chrome__take_snapshot` to resolve uids for the inputs.
+2. `mcp__electron-chrome__fill` the `welcome-path` input with `/home/lukas/Projects/Github/lukaskellerstein`.
+3. `mcp__electron-chrome__fill` the `welcome-name` input with `dex-ecommerce`.
+4. The submit button label should now read `Open Existing` (because the folder exists after reset). Click it.
+
+### Step 4 — Start the autonomous loop
+
+On the Autonomous Loop page:
+
+1. `GOAL.md` is auto-detected — no need to write it.
+2. Toggle **Automatic Clarification** on (the switch next to "Skip interactive Q&A — agent auto-selects recommended options based on GOAL.md context").
+3. Click **Start Autonomous Loop**.
+
+From here the orchestrator takes over: it creates its own branch, runs clarification, planning, and the implement loop. Observe via snapshots, screenshots, `/tmp/dex-logs/*.log`, and the live trace view.
+
+## 4d. Test
+
+**UI / Renderer changes** — use `electron-chrome` MCP (CDP port 9333):
 1. Ensure `dev-setup.sh` is running.
-2. Use `mcp__electron-chrome__*` tools to verify the change is visible and functional.
+2. For any flow that requires an open project, follow section **4c** first.
+3. Use `mcp__electron-chrome__*` tools to verify the change is visible and functional.
 
 **Core engine changes** (`src/core/`):
 1. Run `npx tsc --noEmit` to verify types compile.
 2. If unit tests exist, run them.
-3. If the change affects UI behavior, verify via `electron-chrome` MCP.
+3. If the change affects UI behavior, verify via `electron-chrome` MCP following section **4c**.
 
 **IPC / Main process changes**:
 1. Verify the Electron app starts without errors (check `/tmp/dex-logs/electron.log`).
@@ -42,14 +104,156 @@ Tools available: `mcp__electron-chrome__take_snapshot`, `mcp__electron-chrome__t
 
 **Non-testable changes** (docs, config, build scripts): explicitly state why no runtime test is needed.
 
-## 4d. Fix and repeat
+## 4e. Fix and repeat
 
 If a test fails: fix the issue, then retest. Repeat until all DoD items pass. If you encounter a problem that you repeatedly cannot resolve, ask the user for help.
 
-## 4e. Process log reading
+## 4f. Diagnostics — logs, state, audit DB, and the DEBUG badge
 
-`dev-setup.sh` writes each process's output to log files under `/tmp/dex-logs/`:
-- `/tmp/dex-logs/vite.log` — Vite dev server
-- `/tmp/dex-logs/electron.log` — Electron app
+When something looks wrong, check these sources in order. They are listed from cheapest to most expensive, and each one answers a different class of question. **The fastest path from "something's wrong" to the right log file is: click the DEBUG badge (4f.6) → copy the `RunID` and `PhaseTraceID` → open `~/.dex/logs/<project>/<RunID>/phase-<N>_<slug>/agent.log`.**
 
-Use the `Read` tool to inspect these logs when debugging. Logs are truncated on each `dev-setup.sh` restart, so they always reflect the current session.
+### 4f.1 Process logs — `/tmp/dex-logs/`
+
+`dev-setup.sh` truncates both files on every restart, so they always reflect the current session. Read them with the `Read` tool (don't `tail -f` — they're static snapshots).
+
+| File | Source | Contains |
+|---|---|---|
+| `/tmp/dex-logs/vite.log` | Vite dev server | Bundler output, HMR events, build errors, the `ready in …` banner and `Local: http://localhost:5500/` line |
+| `/tmp/dex-logs/electron.log` | Electron main process stdout/stderr | `DevTools listening on ws://127.0.0.1:9333/...`, unhandled errors, IPC handler throws, `console.*` from anything in `src/main/`, orchestrator stdout |
+
+**What to look for:**
+
+- **App won't load** → `vite.log` for a build error, then `electron.log` for a "Failed to load URL" line.
+- **IPC call returns undefined / throws** → `electron.log`, grep for the handler name (e.g. `project:open-path`) or the error class.
+- **Orchestrator crashes mid-run** → cross-reference `electron.log` and the per-run log tree in 4f.2.
+- **Renderer-side errors** (React render exceptions, unhandled promises in the UI) — these do **not** appear in `electron.log`. Use the DevTools console via MCP: `mcp__electron-chrome__list_console_messages`.
+
+### 4f.2 Per-run orchestrator logs — `~/.dex/logs/<project>/<run-id>/`
+
+This is the **authoritative log tree for anything the orchestrator does**. Structured per run, per phase, and per subagent — exactly the granularity you need when debugging a specific agent's behavior. Persisted forever (no truncation on restart).
+
+```
+~/.dex/logs/<project-name>/<run-id>/
+├── run.log                              — run-level lifecycle (prerequisites, branch creation, stage transitions, termination)
+└── phase-<N>_<slug>/                    — one dir per phase the orchestrator opened
+    ├── agent.log                        — everything the main agent of this phase did (events, tool calls, SDK stream)
+    └── subagents/
+        └── <subagent-id>.log            — one file per spawned subagent, raw SDK input + lifecycle
+```
+
+Every line is `[<ISO-timestamp>] [<LEVEL>] <message> <optional JSON>`:
+
+```
+[2026-04-16T20:38:42.431Z] [INFO] run: starting orchestrator {"mode":"loop","model":"claude-opus-4-6",...}
+[2026-04-16T20:38:42.580Z] [INFO] runLoop: created branch con/2026-04-16-3b084c from main
+```
+
+**How to find the right file from an ID:**
+
+| You have… | Path |
+|---|---|
+| `runId` | `~/.dex/logs/<project>/<runId>/run.log` — run-level events only |
+| `runId` + phase number | `~/.dex/logs/<project>/<runId>/phase-<N>_*/agent.log` — the main agent for that phase |
+| `phaseTraceId` | grep `run.log` for the ID to find its phase number, then open `phase-<N>_*/agent.log`. `phaseTraceId` is logged at phase start. |
+| `subagentId` | `~/.dex/logs/<project>/<runId>/phase-*/subagents/<subagentId>.log` — glob across phases if you don't know which one spawned it |
+
+**How to get a `runId` / `phaseTraceId` in the first place:**
+
+- From the running app — click the **DEBUG badge** (4f.6); both IDs are in the payload.
+- From the SQLite DB — `SELECT id FROM runs ORDER BY created_at DESC LIMIT 1;` for the latest run, then `SELECT id, phase_number FROM phase_traces WHERE run_id = '<runId>';` for its phases.
+- From the orchestrator event stream — every event carries `runId` / `phaseTraceId`.
+
+**`~/.dex/orchestrator.log`** — fallback log written when the orchestrator is in a pre-run state and no run directory exists yet. Rarely interesting; consult only if startup dies before a run directory is created.
+
+### 4f.3 Per-project state — `<projectDir>/.dex/`
+
+Each project gets its own state directory. For the example project that's `/home/lukas/Projects/Github/lukaskellerstein/dex-ecommerce/.dex/`. After a reset (section 4c.1), this directory is gone; the loop recreates it on start.
+
+| File | Contains |
+|---|---|
+| `.dex/state.json` | Primary filesystem state — current cycle, stage, branch, pending clarification, active feature |
+| `.dex/feature-manifest.json` | Feature manifest produced by the structured-outputs flow |
+| `.dex/artifacts/` (when present) | Phase artifacts with SHA-256 integrity hashes |
+
+`cat` / `jq` these files to answer "what cycle is the loop on?", "what branch did the orchestrator cut?", "which feature is in progress?". They are JSON.
+
+### 4f.4 Audit trail — `~/.dex/data.db`
+
+Global SQLite database (persisted across `dev-setup.sh` restarts and across projects). Every run, phase, step, and subagent is recorded here. Opened by the main process via `better-sqlite3` with WAL mode enabled.
+
+Key tables:
+
+| Table | Row = | Use to answer |
+|---|---|---|
+| `runs` | One Dex run | "What was the last run's totalCost / duration / status?" |
+| `phase_traces` | One phase within a run | "Which phase took longest?", "What was the result of phase N?" |
+| `trace_steps` | One tool call / agent step inside a phase | "What tools did the agent call during phase X?" |
+| `subagents` | One spawned subagent | "Did a subagent fail?", "How many subagents ran?" |
+| `loop_cycles` | One loop cycle (specify → plan → tasks → implement) | "How many cycles completed?", "What did cycle 3 cost?" |
+
+**From the agent** — prefer the IPC helpers over raw SQL; they return typed rows:
+
+- `window.dexAPI.listRuns(10)` — recent runs
+- `window.dexAPI.getRun(runId)` — run + phase traces
+- `window.dexAPI.getPhaseSteps(phaseTraceId)` — all steps of one phase
+- `window.dexAPI.getPhaseSubagents(phaseTraceId)` — subagents of one phase
+
+Invoke via `mcp__electron-chrome__evaluate_script`:
+
+```js
+async () => await window.dexAPI.listRuns(5)
+```
+
+**Raw SQL fallback** (when the app isn't running or you need joins):
+
+```bash
+sqlite3 ~/.dex/data.db "SELECT id, spec_dir, status, total_cost_usd FROM runs ORDER BY created_at DESC LIMIT 5;"
+```
+
+The SQLite DB and the per-run log tree in 4f.2 share the same IDs — `runId`, `phaseTraceId`, `subagentId`. Use the DB to *find* an ID, then open the corresponding log file for the full event stream.
+
+### 4f.5 Renderer DevTools console
+
+For errors that happen in the React app (render exceptions, unhandled rejections in hooks, etc.):
+
+- `mcp__electron-chrome__list_console_messages` — all console output the page has emitted this session.
+- `mcp__electron-chrome__get_console_message` — inspect a single entry.
+
+This is the **only** place renderer errors surface — they are not in `/tmp/dex-logs/electron.log` and not in the per-run orchestrator logs.
+
+### 4f.6 The DEBUG badge in the UI
+
+The UI exposes a one-click diagnostic snapshot. Look for a small badge labelled **`debug`** (bug icon) in:
+
+- The **breadcrumb bar of the trace view** (top-right, next to any live run indicators).
+- The **Loop Dashboard** header.
+
+Clicking it copies the current debug context to the clipboard and briefly flips the label to `copied` (with a check icon) for 1.5 seconds.
+
+The payload is plain text, formatted like:
+
+```
+Dex Debug Context
+─────────────────
+RunID:           <uuid>
+PhaseTraceID:    <uuid>
+Mode:            loop | build
+Cycle:           <n>
+Stage:           specify | plan | tasks | implement | ...
+SpecDir:         <relative path>
+Phase:           <number> - <name>
+ProjectDir:      <absolute path>
+View:            overview | tasks | trace | loop-dashboard | ...
+IsRunning:       true | false
+ViewHistory:     true | false
+Timestamp:       <ISO-8601>
+```
+
+`RunID` and `PhaseTraceID` are the **primary keys** for both the SQLite audit tables (4f.4) and the per-run log directory (4f.2). This makes the badge the quickest way to pivot from "the UI is showing something weird" to "the exact log file that contains the answer".
+
+**When to use it:**
+
+- **Ask the user to click it and paste** when you need the exact orchestrator state mid-flight and don't want to interrupt the running app with IPC probes.
+- **Don't read the clipboard yourself via MCP** — clipboard access is flaky under remote debugging. Every field in the payload is reachable programmatically via `window.dexAPI.getRunState()` or the orchestrator event stream if you need the data directly.
+
+Treat the badge as the canonical "what is the app actually doing right now?" probe — before asking a clarifying question about state, check whether the DEBUG payload would answer it.

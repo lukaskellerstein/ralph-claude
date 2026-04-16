@@ -50,7 +50,7 @@ export function commitCheckpoint(
     // Ignore — might be the first commit
   }
 
-  exec('git add .dex/state.json', projectDir);
+  exec('git add .dex/state.json .dex/feature-manifest.json', projectDir);
   try {
     exec(`git commit -m "${message}"`, projectDir);
   } catch {
@@ -65,7 +65,7 @@ export function createBranch(
 ): string {
   const date = new Date().toISOString().slice(0, 10);
   const shortId = crypto.randomUUID().slice(0, 6);
-  const branchName = `con/${date}-${shortId}`;
+  const branchName = `dex/${date}-${shortId}`;
 
   exec(`git checkout -b ${branchName}`, projectDir);
   return branchName;
