@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>Orchestrate fresh Claude Code instances per spec-kit phase — clean context, full visibility.</strong>
+  <strong>Autonomous feature engine — fresh agents per phase, structured planning, full trace visibility.</strong>
 </p>
 
 <p align="center">
