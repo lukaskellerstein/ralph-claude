@@ -37,8 +37,8 @@ Tools available: `mcp__electron-chrome__take_snapshot`, `mcp__electron-chrome__t
 3. If the change affects UI behavior, verify via `electron-chrome` MCP.
 
 **IPC / Main process changes**:
-1. Verify the Electron app starts without errors (check `/tmp/ralph-claude-logs/electron.log`).
-2. Test IPC round-trips via `mcp__electron-chrome__evaluate_script` calling `window.ralphAPI.*` methods.
+1. Verify the Electron app starts without errors (check `/tmp/dex-logs/electron.log`).
+2. Test IPC round-trips via `mcp__electron-chrome__evaluate_script` calling `window.dexAPI.*` methods.
 
 **Non-testable changes** (docs, config, build scripts): explicitly state why no runtime test is needed.
 
@@ -48,8 +48,8 @@ If a test fails: fix the issue, then retest. Repeat until all DoD items pass. If
 
 ## 4e. Process log reading
 
-`dev-setup.sh` writes each process's output to log files under `/tmp/ralph-claude-logs/`:
-- `/tmp/ralph-claude-logs/vite.log` — Vite dev server
-- `/tmp/ralph-claude-logs/electron.log` — Electron app
+`dev-setup.sh` writes each process's output to log files under `/tmp/dex-logs/`:
+- `/tmp/dex-logs/vite.log` — Vite dev server
+- `/tmp/dex-logs/electron.log` — Electron app
 
 Use the `Read` tool to inspect these logs when debugging. Logs are truncated on each `dev-setup.sh` restart, so they always reflect the current session.

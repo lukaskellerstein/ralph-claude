@@ -152,10 +152,10 @@ Emitted when Phase A finishes and `full_plan.md` is written.
 
 ## Preload API Extensions
 
-### `window.ralphAPI` (new methods)
+### `window.dexAPI` (new methods)
 
 ```typescript
-interface RalphAPI {
+interface DexAPI {
   // ... existing methods ...
 
   // No new IPC methods needed — loop mode uses existing

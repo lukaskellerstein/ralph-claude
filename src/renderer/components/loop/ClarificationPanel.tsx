@@ -68,7 +68,7 @@ export function ClarificationPanel({ requestId, questions, onAnswer }: Clarifica
             fontWeight: 600,
             color: "var(--foreground)",
           }}>
-            Ralph needs your input
+            Dex needs your input
           </span>
         </div>
 

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-contextBridge.exposeInMainWorld("ralphAPI", {
+contextBridge.exposeInMainWorld("dexAPI", {
   // Project
   openProject: () => ipcRenderer.invoke("project:open"),
   listSpecs: (dir: string) => ipcRenderer.invoke("project:list-specs", dir),

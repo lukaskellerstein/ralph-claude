@@ -8,7 +8,7 @@ import type {
   SpecStats,
 } from "../core/database.js";
 
-interface RalphAPI {
+interface DexAPI {
   // Project
   openProject(): Promise<string | null>;
   listSpecs(dir: string): Promise<string[]>;
@@ -61,7 +61,7 @@ interface RalphAPI {
 
 declare global {
   interface Window {
-    ralphAPI: RalphAPI;
+    dexAPI: DexAPI;
   }
 }
 

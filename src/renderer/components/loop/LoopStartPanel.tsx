@@ -101,7 +101,7 @@ export function LoopStartPanel({ projectDir, isRunning, onStart }: LoopStartPane
   // Auto-detect GOAL.md in project root
   useEffect(() => {
     const defaultPath = `${projectDir}/GOAL.md`;
-    window.ralphAPI.readFile(defaultPath).then((content) => {
+    window.dexAPI.readFile(defaultPath).then((content) => {
       if (content !== null) {
         setGoalPath(defaultPath);
         setGoalDetected(true);
@@ -119,7 +119,7 @@ export function LoopStartPanel({ projectDir, isRunning, onStart }: LoopStartPane
   const handleSaveGoal = useCallback(async () => {
     const filePath = `${projectDir}/GOAL.md`;
     setSaving(true);
-    const ok = await window.ralphAPI.writeFile(filePath, goalContent);
+    const ok = await window.dexAPI.writeFile(filePath, goalContent);
     setSaving(false);
     if (ok) {
       setGoalPath(filePath);
@@ -161,7 +161,7 @@ export function LoopStartPanel({ projectDir, isRunning, onStart }: LoopStartPane
         marginBottom: 20,
         lineHeight: 1.5,
       }}>
-        Provide a GOAL.md describing what you want to build. Ralph will conduct an
+        Provide a GOAL.md describing what you want to build. Dex will conduct an
         interactive clarification session, produce a refined plan (GOAL_clarified.md),
         then autonomously implement each feature in cycles.
       </p>
@@ -351,7 +351,7 @@ export function LoopStartPanel({ projectDir, isRunning, onStart }: LoopStartPane
               onClick={() => {
                 setShowEditor(true);
                 if (!goalContent && goalPath) {
-                  window.ralphAPI.readFile(goalPath).then((c) => {
+                  window.dexAPI.readFile(goalPath).then((c) => {
                     if (c) setGoalContent(c);
                   });
                 }

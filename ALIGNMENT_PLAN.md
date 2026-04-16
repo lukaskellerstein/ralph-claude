@@ -4,7 +4,7 @@
 
 Project state is split between SQLite DB, in-memory variables, and filesystem artifacts. On pause/resume they diverge: DB says one thing, `tasks.md` says another, in-memory state is lost. Manual edits to project files (deleting specs, editing tasks) make it worse — there's no drift detection.
 
-**Goal**: Single source of truth via `.ralph/state.json` committed to the branch, with artifact integrity checking and git checkpoints. DB demoted to append-only audit log.
+**Goal**: Single source of truth via `.dex/state.json` committed to the branch, with artifact integrity checking and git checkpoints. DB demoted to append-only audit log.
 
 ---
 
@@ -12,7 +12,7 @@ Project state is split between SQLite DB, in-memory variables, and filesystem ar
 
 ### Three pillars
 
-1. **`.ralph/state.json`** (committed to git) — orchestrator position, failure counts, config snapshot, artifact manifest with content hashes
+1. **`.dex/state.json`** (committed to git) — orchestrator position, failure counts, config snapshot, artifact manifest with content hashes
 2. **Git commits as checkpoints** — one commit per stage, state file records previous checkpoint SHA for drift detection
 3. **Integrity reconciliation on resume** — verify artifacts still exist and match, detect manual edits, decide what to re-run
 
@@ -26,10 +26,10 @@ Project state is split between SQLite DB, in-memory variables, and filesystem ar
 
 ## New file: `src/core/state.ts`
 
-### `RalphState` interface
+### `DexState` interface
 
 ```typescript
-interface RalphState {
+interface DexState {
   version: 1;
   runId: string;
   status: "running" | "paused" | "completed" | "failed";
@@ -112,16 +112,16 @@ interface TasksArtifact extends ArtifactEntry {
 
 ```typescript
 // Atomic write: write .tmp then rename
-saveState(projectDir: string, state: RalphState): void
+saveState(projectDir: string, state: DexState): void
 
 // Read + parse + version check, null on missing/corrupt
-loadState(projectDir: string): RalphState | null
+loadState(projectDir: string): DexState | null
 
 // Delete state file (on clean completion)
 clearState(projectDir: string): void
 
 // Read-merge-write for partial updates
-updateState(projectDir: string, patch: Partial<RalphState>): void
+updateState(projectDir: string, patch: Partial<DexState>): void
 
 // SHA-256 of file contents
 hashFile(filePath: string): string
@@ -130,10 +130,10 @@ hashFile(filePath: string): string
 detectStaleState(projectDir: string): "fresh" | "stale" | "completed" | "none"
 
 // Build initial state from RunConfig
-createInitialState(config: RunConfig, runId: string, branchName: string, baseBranch: string): RalphState
+createInitialState(config: RunConfig, runId: string, branchName: string, baseBranch: string): DexState
 
 // The key function: verify artifacts match state, return reconciliation plan
-reconcileState(projectDir: string, state: RalphState): ReconciliationResult
+reconcileState(projectDir: string, state: DexState): ReconciliationResult
 ```
 
 ---
@@ -185,7 +185,7 @@ interface ReconciliationResult {
   resumeFrom: { phase: string; cycleNumber: number; stage: LoopStageType; specDir?: string };
   warnings: string[];    // Shown to user, don't block
   blockers: string[];    // Require user decision via user_input_request
-  statePatches: Partial<RalphState>;
+  statePatches: Partial<DexState>;
 }
 ```
 
@@ -198,7 +198,7 @@ When `blockers.length > 0`, emit `user_input_request` asking the user to choose:
 After each stage completes:
 
 1. Update `state.json` with new `lastCompletedStage`, updated artifact hashes
-2. `git add -A && git commit -m "ralph: <stage> completed [cycle:<N>] [feature:<name>]"`
+2. `git add -A && git commit -m "dex: <stage> completed [cycle:<N>] [feature:<name>]"`
 3. `state.json.checkpoint.sha = git rev-parse HEAD`
 4. Write updated `state.json` to disk (NOT committed yet — sits in working tree)
 
@@ -209,7 +209,7 @@ On next stage, step 2 picks up the updated checkpoint SHA.
 **Commit message format** (machine-parseable):
 
 ```
-ralph: <stage_type> completed [cycle:<N>] [feature:<name>] [cost:$<X.XX>]
+dex: <stage_type> completed [cycle:<N>] [feature:<name>] [cost:$<X.XX>]
 ```
 
 ---
@@ -219,7 +219,7 @@ ralph: <stage_type> completed [cycle:<N>] [feature:<name>] [cost:$<X.XX>]
 ### `src/core/types.ts`
 - Remove `resumeRunId?: string` from `RunConfig` (line 173)
 - Add `resume?: boolean` to `RunConfig`
-- Export `RalphState`, `ArtifactEntry`, `FeatureArtifacts`, `TasksArtifact`, `ReconciliationResult`
+- Export `DexState`, `ArtifactEntry`, `FeatureArtifacts`, `TasksArtifact`, `ReconciliationResult`
 
 ### `src/core/orchestrator.ts`
 - Import state functions from `state.ts`
@@ -284,18 +284,18 @@ On clean loop completion: set `status: "completed"`, commit. State file persists
 5. Update `RunConfig` type: `resume: boolean` replaces `resumeRunId`
 6. Update IPC handlers + preload + electron.d.ts
 7. Update renderer hooks + App.tsx
-8. Ensure `.ralph/state.json` is NOT gitignored (it should be committed to the branch)
+8. Ensure `.dex/state.json` is NOT gitignored (it should be committed to the branch)
 
 ---
 
 ## Verification
 
 1. `npx tsc --noEmit` passes
-2. Start loop → verify `.ralph/state.json` created and updates at each stage
+2. Start loop → verify `.dex/state.json` created and updates at each stage
 3. Pause mid-run → verify state file has `status: "paused"` with correct position + artifact hashes
 4. Resume → verify picks up from correct stage, no duplicate execution
 5. Kill Electron process → restart → verify UI shows paused state from state file
 6. Manually delete a spec folder → resume → verify reconciliation detects it and re-runs from specify
 7. Manually uncheck tasks in `tasks.md` → resume → verify it re-runs implement from the right phase
 8. Let loop complete → verify state file set to "completed" and cleaned up on next start
-9. Check `.ralph/state.json` appears in git commits on the branch
+9. Check `.dex/state.json` appears in git commits on the branch

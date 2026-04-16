@@ -27,7 +27,7 @@ Platform-agnostic orchestrator — no Electron imports. Can be tested standalone
 ## Electron Main Process (`src/main/`)
 
 - IPC handlers bridge the core orchestrator to the renderer
-- Preload script exposes `window.ralphAPI` via contextBridge
+- Preload script exposes `window.dexAPI` via contextBridge
 - All orchestrator events flow through IPC: `webContents.send("orchestrator:event", event)`
 
 ## Renderer (`src/renderer/`)
@@ -41,14 +41,14 @@ Platform-agnostic orchestrator — no Electron imports. Can be tested standalone
 ## Repository Structure
 
 ```
-ralph-claude/
+dex/
 ├── package.json
 ├── vite.config.ts
 ├── tsconfig.json
 ├── src/
 │   ├── main/           # Electron main process
 │   │   ├── index.ts    # App lifecycle, BrowserWindow, IPC
-│   │   ├── preload.ts  # contextBridge → window.ralphAPI
+│   │   ├── preload.ts  # contextBridge → window.dexAPI
 │   │   └── ipc/        # IPC handler registration
 │   ├── core/           # Orchestrator engine (pure Node.js)
 │   │   ├── orchestrator.ts

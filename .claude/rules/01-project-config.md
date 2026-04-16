@@ -4,7 +4,7 @@ description: Project configuration — architecture, paths, dev environment
 
 # Project Config
 
-- **Project**: Ralph Claude — Electron desktop app that orchestrates Claude Code instances for spec-kit projects
+- **Project**: Dex — Electron desktop app that orchestrates Claude Code instances for spec-kit projects
 - **Concept**: "Ralph Wiggum" approach — spawn fresh Claude Code instances per phase of work, each with clean context to prevent token bloat
 - **Architecture**: Electron (main process) + React 18 (renderer) + Claude Agent SDK (orchestration engine)
 - **Structure**: `src/main/` (Electron main process + IPC), `src/core/` (platform-agnostic orchestrator engine), `src/renderer/` (React UI)

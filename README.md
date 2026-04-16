@@ -1,7 +1,7 @@
-# Ralph Claude
+# Dex
 
 <p align="center">
-  <img src="docs/logo/logo-medium.png" alt="Ralph Claude Logo" width="128" />
+  <img src="docs/logo/logo-medium.png" alt="Dex Logo" width="128" />
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 
 ---
 
-Ralph Claude is an Electron desktop app that automates feature implementation using the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk) and [spec-kit](https://github.com/anthropics/claude-code/tree/main/skills). It spawns a fresh Claude Code agent per **phase** of work — each with clean context to prevent token bloat — while streaming every tool call, subagent spawn, and thinking step to a real-time trace UI.
+Dex is an Electron desktop app that automates feature implementation using the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-agent-sdk) and [spec-kit](https://github.com/anthropics/claude-code/tree/main/skills). It spawns a fresh Claude Code agent per **phase** of work — each with clean context to prevent token bloat — while streaming every tool call, subagent spawn, and thinking step to a real-time trace UI.
 
 ## Features
 
@@ -39,7 +39,7 @@ graph TD
 
     subgraph Main["Main Process (Electron)"]
         IPC[IPC Handlers]
-        Preload[contextBridge → ralphAPI]
+        Preload[contextBridge → dexAPI]
     end
 
     subgraph Core["Core Engine (Pure Node.js)"]
@@ -51,7 +51,7 @@ graph TD
 
     SDK[Claude Agent SDK]
 
-    UI <-->|window.ralphAPI| Preload
+    UI <-->|window.dexAPI| Preload
     Preload <-->|ipcMain.handle / webContents.send| IPC
     IPC --> Orch
     Orch --> Parser
@@ -78,8 +78,8 @@ graph TD
 ### Installation
 
 ```bash
-git clone https://github.com/lukaskellerstein/ralph-claude.git
-cd ralph-claude
+git clone https://github.com/lukaskellerstein/dex.git
+cd dex
 npm install
 ```
 
@@ -89,7 +89,7 @@ npm install
 ./dev-setup.sh
 ```
 
-This starts the Vite dev server (port 5500) and launches Electron with hot reload. Logs go to `/tmp/ralph-claude-logs/`.
+This starts the Vite dev server (port 5500) and launches Electron with hot reload. Logs go to `/tmp/dex-logs/`.
 
 ### Production Build
 
@@ -117,11 +117,11 @@ npm run build:start
 ## Project Structure
 
 ```
-ralph-claude/
+dex/
 ├── src/
 │   ├── main/               # Electron main process
 │   │   ├── index.ts        # App lifecycle, BrowserWindow, IPC
-│   │   ├── preload.ts      # contextBridge → window.ralphAPI
+│   │   ├── preload.ts      # contextBridge → window.dexAPI
 │   │   └── ipc/            # Handler modules (orchestrator, project, history)
 │   ├── core/               # Orchestration engine (pure Node.js, no Electron imports)
 │   │   ├── orchestrator.ts # Phase loop, agent spawning, event emission

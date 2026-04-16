@@ -20,7 +20,7 @@ Spawns a Claude Code agent via the SDK and inspects the system init message to v
 npx tsx tests/test-agent-init.ts [project-dir]
 ```
 
-- `project-dir` — the working directory the agent operates in (defaults to `ralph-claude-ecommerce` sibling repo)
+- `project-dir` — the working directory the agent operates in (defaults to `dex-ecommerce` sibling repo)
 - Uses `claude-opus-4-6` model with `bypassPermissions` mode
 - Limited to 3 turns max
 

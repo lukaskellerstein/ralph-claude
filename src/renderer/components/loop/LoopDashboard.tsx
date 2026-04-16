@@ -303,7 +303,7 @@ function ClarificationView({
   );
 }
 
-// ── Ralph Loop Phase View ──
+// ── Dex Loop Phase View ──
 
 function LoopPhaseView({
   cycles,

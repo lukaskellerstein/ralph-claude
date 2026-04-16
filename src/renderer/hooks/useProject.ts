@@ -24,14 +24,14 @@ export function useProject() {
   const [phaseStats, setPhaseStats] = useState<PhaseStatsMap>(new Map());
 
   const loadSpecs = async (dir: string) => {
-    const specList = await window.ralphAPI.listSpecs(dir);
+    const specList = await window.dexAPI.listSpecs(dir);
     setSpecs(specList);
 
     const summaries: SpecSummary[] = [];
     for (const spec of specList) {
       const [parsed, stats] = await Promise.all([
-        window.ralphAPI.parseSpec(dir, spec),
-        window.ralphAPI.getSpecAggregateStats(dir, spec).catch(() => undefined),
+        window.dexAPI.parseSpec(dir, spec),
+        window.dexAPI.getSpecAggregateStats(dir, spec).catch(() => undefined),
       ]);
       const totalTasks = parsed.reduce((s, p) => s + p.tasks.length, 0);
       const doneTasks = parsed.reduce(
@@ -62,7 +62,7 @@ export function useProject() {
   };
 
   const openProject = async (): Promise<string | null> => {
-    const dir = await window.ralphAPI.openProject();
+    const dir = await window.dexAPI.openProject();
     if (dir) {
       setProjectDir(dir);
       setSelectedSpec(null);
@@ -73,7 +73,7 @@ export function useProject() {
   };
 
   const createProject = async (parentDir: string, name: string): Promise<{ path: string } | { error: string }> => {
-    const result = await window.ralphAPI.createProject(parentDir, name);
+    const result = await window.dexAPI.createProject(parentDir, name);
     if ("path" in result) {
       setProjectDir(result.path);
       setSelectedSpec(null);
@@ -93,7 +93,7 @@ export function useProject() {
       setPhases([]);
     } else if (selectedSpec) {
       // Re-parse the selected spec to pick up task changes
-      const parsed = await window.ralphAPI.parseSpec(projectDir, selectedSpec);
+      const parsed = await window.dexAPI.parseSpec(projectDir, selectedSpec);
       setPhases(parsed);
     }
   };
@@ -102,8 +102,8 @@ export function useProject() {
     if (!projectDir) return;
     setSelectedSpec(specName);
     const [parsed, traceRows] = await Promise.all([
-      window.ralphAPI.parseSpec(projectDir, specName),
-      window.ralphAPI.getSpecPhaseStats(projectDir, specName).catch(() => [] as PhaseTraceRow[]),
+      window.dexAPI.parseSpec(projectDir, specName),
+      window.dexAPI.getSpecPhaseStats(projectDir, specName).catch(() => [] as PhaseTraceRow[]),
     ]);
     setPhases(parsed);
     const statsMap = new Map<number, PhaseTraceRow>();

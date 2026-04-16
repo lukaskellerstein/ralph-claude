@@ -60,7 +60,7 @@ import type {
 
 // ── Logging ──
 
-const LOGS_ROOT = path.join(os.homedir(), ".ralph-claude", "logs");
+const LOGS_ROOT = path.join(os.homedir(), ".dex", "logs");
 
 function formatLogLine(level: string, msg: string, data?: unknown): string {
   const ts = new Date().toISOString();
@@ -73,7 +73,7 @@ function formatLogLine(level: string, msg: string, data?: unknown): string {
  * Structured per-run logger.
  *
  * Directory layout:
- *   ~/.ralph-claude/logs/<project-name>/<run-id>/
+ *   ~/.dex/logs/<project-name>/<run-id>/
  *     run.log                          — run-level lifecycle events
  *     phase-<N>_<slug>/
  *       agent.log                      — all events for this phase's agent
@@ -133,7 +133,7 @@ class RunLogger {
 }
 
 /** Fallback logger used before a run starts (global orchestrator log). */
-const FALLBACK_LOG = path.join(os.homedir(), ".ralph-claude", "orchestrator.log");
+const FALLBACK_LOG = path.join(os.homedir(), ".dex", "orchestrator.log");
 function log(level: "INFO" | "ERROR" | "DEBUG" | "WARN", msg: string, data?: unknown): void {
   fs.mkdirSync(path.dirname(FALLBACK_LOG), { recursive: true });
   fs.appendFileSync(FALLBACK_LOG, formatLogLine(level, msg, data));

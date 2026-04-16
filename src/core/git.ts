@@ -54,11 +54,11 @@ export function createPullRequest(
   const durationMin = (totalDurationMs / 60_000).toFixed(1);
   const costStr = totalCost > 0 ? `$${totalCost.toFixed(2)}` : "n/a";
 
-  const title = `Ralph ${mode}: ${phasesCompleted} phase${phasesCompleted === 1 ? "" : "s"} completed`;
+  const title = `Dex ${mode}: ${phasesCompleted} phase${phasesCompleted === 1 ? "" : "s"} completed`;
 
   const body = `## Summary
 
-Automated ${mode} run by Ralph orchestrator.
+Automated ${mode} run by Dex orchestrator.
 
 - **Mode**: ${mode}
 - **Phases completed**: ${phasesCompleted}
@@ -77,7 +77,7 @@ ${diffStat || "No changes."}
 `;
 
   // Write body to a temp file to avoid shell escaping issues
-  const bodyFile = path.join(os.tmpdir(), `ralph-pr-body-${crypto.randomUUID()}.md`);
+  const bodyFile = path.join(os.tmpdir(), `dex-pr-body-${crypto.randomUUID()}.md`);
   try {
     fs.writeFileSync(bodyFile, body, "utf-8");
     const prUrl = exec(
@@ -124,7 +124,7 @@ export function createLoopPullRequest(
   const durationMin = (totalDurationMs / 60_000).toFixed(1);
   const costStr = totalCost > 0 ? `$${totalCost.toFixed(2)}` : "n/a";
 
-  const title = `Ralph loop: ${featuresCompleted.length} feature${featuresCompleted.length === 1 ? "" : "s"} completed`;
+  const title = `Dex loop: ${featuresCompleted.length} feature${featuresCompleted.length === 1 ? "" : "s"} completed`;
 
   const completedList = featuresCompleted.length > 0
     ? featuresCompleted.map((f) => `  - ${f}`).join("\n")
@@ -135,7 +135,7 @@ export function createLoopPullRequest(
 
   const body = `## Summary
 
-Autonomous loop run by Ralph orchestrator.
+Autonomous loop run by Dex orchestrator.
 
 - **Termination reason**: ${terminationReason}
 - **Cycles completed**: ${cyclesCompleted}
@@ -161,7 +161,7 @@ ${diffStat || "No changes."}
 \`\`\`
 `;
 
-  const bodyFile = path.join(os.tmpdir(), `ralph-pr-body-${crypto.randomUUID()}.md`);
+  const bodyFile = path.join(os.tmpdir(), `dex-pr-body-${crypto.randomUUID()}.md`);
   try {
     fs.writeFileSync(bodyFile, body, "utf-8");
     const prUrl = exec(

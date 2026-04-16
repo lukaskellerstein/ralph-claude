@@ -9,7 +9,7 @@
  * Usage:
  *   npx tsx tests/test-agent-init.ts [project-dir]
  *
- * Default project-dir: /home/lukas/Projects/Github/lukaskellerstein/ralph-claude-ecommerce
+ * Default project-dir: /home/lukas/Projects/Github/lukaskellerstein/dex-ecommerce
  */
 
 const CYAN = "\x1b[96m";
@@ -44,9 +44,9 @@ function log(category: string, message: string): void {
 
 async function main(): Promise<void> {
   const projectDir = process.argv[2]
-    ?? "/home/lukas/Projects/Github/lukaskellerstein/ralph-claude-ecommerce";
+    ?? "/home/lukas/Projects/Github/lukaskellerstein/dex-ecommerce";
 
-  console.log(`\n${BOLD}Ralph-Claude Agent Init Diagnostics${RESET}`);
+  console.log(`\n${BOLD}Dex Agent Init Diagnostics${RESET}`);
   console.log("─".repeat(60) + "\n");
 
   log("CONFIG", `Project dir: ${projectDir}`);

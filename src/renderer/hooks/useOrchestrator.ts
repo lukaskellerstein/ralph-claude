@@ -125,13 +125,13 @@ export function useOrchestrator(): OrchestratorHook {
   }, []);
 
   const answerQuestion = useCallback((requestId: string, answers: Record<string, string>) => {
-    window.ralphAPI.answerQuestion(requestId, answers);
+    window.dexAPI.answerQuestion(requestId, answers);
     setPendingQuestion(null);
   }, []);
 
   // Sync full running state with main process on mount (survives HMR/reload)
   useEffect(() => {
-    window.ralphAPI.getRunState().then(async (state) => {
+    window.dexAPI.getRunState().then(async (state) => {
       if (!state) return;
 
       setIsRunning(true);
@@ -151,7 +151,7 @@ export function useOrchestrator(): OrchestratorHook {
 
       // Rebuild loop dashboard state from DB
       if (state.mode === "loop") {
-        const runData = await window.ralphAPI.getRun(state.runId);
+        const runData = await window.dexAPI.getRun(state.runId);
         if (runData) {
           const loopTraces = runData.phases.filter((pt) => pt.phase_name.startsWith("loop:"));
           const implTraces = runData.phases.filter((pt) => !pt.phase_name.startsWith("loop:"));
@@ -246,8 +246,8 @@ export function useOrchestrator(): OrchestratorHook {
 
       // Reload accumulated steps and subagents for the running phase
       const [stepRows, subagentRows] = await Promise.all([
-        window.ralphAPI.getPhaseSteps(state.phaseTraceId),
-        window.ralphAPI.getPhaseSubagents(state.phaseTraceId),
+        window.dexAPI.getPhaseSteps(state.phaseTraceId),
+        window.dexAPI.getPhaseSubagents(state.phaseTraceId),
       ]);
 
       setLiveSteps(
@@ -277,7 +277,7 @@ export function useOrchestrator(): OrchestratorHook {
   }, []);
 
   useEffect(() => {
-    const unsub = window.ralphAPI.onOrchestratorEvent(
+    const unsub = window.dexAPI.onOrchestratorEvent(
       (event: OrchestratorEvent) => {
         switch (event.type) {
           case "run_started":
@@ -610,12 +610,12 @@ export function useOrchestrator(): OrchestratorHook {
   }, []);
 
   const loadRunHistory = useCallback(async (projectDir: string): Promise<boolean> => {
-    const data = await window.ralphAPI.getLatestProjectRun(projectDir);
+    const data = await window.dexAPI.getLatestProjectRun(projectDir);
     if (!data || data.run.mode !== "loop") return false;
 
     // Validate that the project still has artifacts from past runs.
     // If .specify/integration.json doesn't exist, the project was reset — history is stale.
-    const specKitMarker = await window.ralphAPI.readFile(`${projectDir}/.specify/integration.json`);
+    const specKitMarker = await window.dexAPI.readFile(`${projectDir}/.specify/integration.json`);
     if (!specKitMarker) return false;
 
     const { run, phases: phaseTraces, loopCycles: cycleRows } = data;
@@ -745,7 +745,7 @@ export function useOrchestrator(): OrchestratorHook {
 
   const loadPhaseTrace = useCallback(
     async (projectDir: string, specDir: string, phase: Phase) => {
-      const trace = await window.ralphAPI.getLatestPhaseTrace(
+      const trace = await window.dexAPI.getLatestPhaseTrace(
         projectDir,
         specDir,
         phase.number
@@ -753,8 +753,8 @@ export function useOrchestrator(): OrchestratorHook {
       if (!trace) return false;
 
       const [stepRows, subagentRows] = await Promise.all([
-        window.ralphAPI.getPhaseSteps(trace.id),
-        window.ralphAPI.getPhaseSubagents(trace.id),
+        window.dexAPI.getPhaseSteps(trace.id),
+        window.dexAPI.getPhaseSubagents(trace.id),
       ]);
 
       const steps: AgentStep[] = stepRows.map((row) => ({
@@ -793,8 +793,8 @@ export function useOrchestrator(): OrchestratorHook {
   const loadStageTrace = useCallback(
     async (phaseTraceId: string, stageType: LoopStageType, meta?: { costUsd?: number; durationMs?: number }) => {
       const [stepRows, subagentRows] = await Promise.all([
-        window.ralphAPI.getPhaseSteps(phaseTraceId),
-        window.ralphAPI.getPhaseSubagents(phaseTraceId),
+        window.dexAPI.getPhaseSteps(phaseTraceId),
+        window.dexAPI.getPhaseSubagents(phaseTraceId),
       ]);
 
       setLiveSteps(
@@ -847,8 +847,8 @@ export function useOrchestrator(): OrchestratorHook {
     // steps from incoming events; flip it after setLiveSteps.
     if (liveId) {
       const [stepRows, subagentRows] = await Promise.all([
-        window.ralphAPI.getPhaseSteps(liveId),
-        window.ralphAPI.getPhaseSubagents(liveId),
+        window.dexAPI.getPhaseSteps(liveId),
+        window.dexAPI.getPhaseSubagents(liveId),
       ]);
 
       setLiveSteps(

@@ -74,10 +74,10 @@ export function Topbar({
       >
         <img
           src="./logo.png"
-          alt="Ralph Claude"
+          alt="Dex"
           style={{ width: 18, height: 18, borderRadius: 3 }}
         />
-        Ralph Claude
+        Dex
       </button>
 
       <div

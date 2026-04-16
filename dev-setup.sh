@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# dev-setup.sh — Start all Ralph Claude components for development.
+# dev-setup.sh — Start all Dex components for development.
 #
 # Starts Vite dev server (HMR) and Electron with CDP enabled so the
 # AI agent can test UI changes via the electron-chrome MCP server.
@@ -13,7 +13,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # --- Directories ---
-LOG_DIR="/tmp/ralph-claude-logs"
+LOG_DIR="/tmp/dex-logs"
 mkdir -p "$LOG_DIR"
 
 # Truncate old logs
@@ -50,7 +50,7 @@ run_prefixed() {
 VITE_PORT=5500
 DEVTOOLS_PORT=9333
 
-echo "=== Ralph Claude Development Environment ==="
+echo "=== Dex Development Environment ==="
 echo "  Vite (HMR):    port ${VITE_PORT}"
 echo "  Electron:      devtools port ${DEVTOOLS_PORT}"
 echo ""

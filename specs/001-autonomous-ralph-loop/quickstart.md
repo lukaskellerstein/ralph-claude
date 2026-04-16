@@ -44,7 +44,7 @@ npm install
 
 9. **Wire `runLoop()` into `run()`** — Mode dispatch: `"loop"` → `runLoop()`, others → `runBuild()`
 10. **Update IPC handlers** — Support loop-specific events and clarification forwarding
-11. **Update preload** — Expose loop API methods on `window.ralphAPI`
+11. **Update preload** — Expose loop API methods on `window.dexAPI`
 
 ### Phase 4: UI (P2)
 

@@ -17,7 +17,7 @@ export interface ProcessStepperProps {
 const STEPS: { phase: MacroPhase; label: string }[] = [
   { phase: "prerequisites", label: "Prerequisites" },
   { phase: "clarification", label: "Clarification" },
-  { phase: "loop", label: "Ralph Loop" },
+  { phase: "loop", label: "Dex Loop" },
   { phase: "completion", label: "Completion" },
 ];
 

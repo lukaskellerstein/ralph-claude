@@ -7,7 +7,7 @@ import fs from "node:fs";
 let db: Database.Database | null = null;
 
 function getDbPath(): string {
-  const dir = path.join(os.homedir(), ".ralph-claude");
+  const dir = path.join(os.homedir(), ".dex");
   fs.mkdirSync(dir, { recursive: true });
   return path.join(dir, "data.db");
 }

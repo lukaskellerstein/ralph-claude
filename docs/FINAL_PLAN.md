@@ -1,8 +1,8 @@
-# Ralph-Claude: Final Plan
+# Dex: Final Plan
 
 ## 1. Architecture Comparison
 
-| Aspect | Original Ralph Wiggum | Our Implementation (Ralph-Claude) |
+| Aspect | Original Ralph Wiggum | Our Implementation (Dex) |
 |--------|----------------------|-----------------------------------|
 | **Runtime** | Bash loop: `while :; do cat PROMPT.md \| claude-code ; done` | Electron app + Claude Agent SDK `query()` |
 | **Context isolation** | Fresh CLI process each loop iteration | Fresh `query()` call per stage (same effect) |
@@ -60,7 +60,7 @@ Auto-trigger: 3 consecutive failures on same spec → force `REPLAN_FEATURE`. 3 
 
 ### G8 — Resolved: "Signs" Prompt Architecture
 **Ralph:** Numbered guardrails (999...N), orient phase (0a-0c), specific language patterns.
-**Our solution:** Step 8 implements full Ralph-style prompts — orient phase (0a-0e), numbered guardrails, "study"/"don't assume"/"capture the why" language patterns.
+**Our solution:** Step 8 implements full Ralph Wiggum-style prompts — orient phase (0a-0e), numbered guardrails, "study"/"don't assume"/"capture the why" language patterns.
 
 ### G9 — Resolved (Our Innovation): Interactive Clarification
 **Ralph:** Assumes operator provides correct specs upfront.
@@ -96,7 +96,7 @@ Direct `query()` API with typed hooks vs bash pipe. Gives us abort control, sess
 HMR-safe state via `getRunState()`, orphaned run cleanup, two-path task tracking (TodoWrite + disk reconciliation). Ralph crashes = `git reset --hard` and restart.
 
 ### A6: Git Automation with Metrics
-Automated branch creation (`ralph/{plan|build}/{date}-{id}`), PR generation with cost/duration/phase metrics. Ralph commits but doesn't automate PRs with analytics.
+Automated branch creation (`dex/{plan|build}/{date}-{id}`), PR generation with cost/duration/phase metrics. Ralph commits but doesn't automate PRs with analytics.
 
 ### A7: Abort / Graceful Stop
 `AbortController` integration for stopping a running agent mid-phase. Ralph's loop must be killed externally.
@@ -203,7 +203,7 @@ New file with all prompt construction:
 - `buildTasksPrompt(config, specPath)` — wraps `/speckit.tasks`
 - `buildVerifyPrompt(config, specDir, fullPlanPath)` — build + tests + browser-based e2e
 - `buildLearningsPrompt(config, specDir)` — update `.claude/rules/learnings.md`
-- `buildImplementPrompt(config, phase)` — existing `buildPrompt()` with Ralph-style guardrails
+- `buildImplementPrompt(config, phase)` — existing `buildPrompt()` with Ralph Wiggum-style guardrails
 - `parseGapAnalysisResult(output)` — extract decision (`NEXT_FEATURE`/`RESUME_FEATURE`/`REPLAN_FEATURE`/`GAPS_COMPLETE`)
 - `discoverNewSpecDir(projectDir, knownSpecs)` — find just-created spec dir
 
@@ -211,7 +211,7 @@ New file with all prompt construction:
 The main Ralph loop: clarification → constitution → [gap analysis → (specify → plan → tasks | resume | replan) → implement → verify → learnings → loop]. Wired into `run()` when `mode === "loop"`. Includes failure tracking per spec for automatic re-plan triggers.
 
 #### Step 6: Update `git.ts`
-Handle `"loop"` mode in branch names (`ralph/loop/{date}-{id}`) and PR titles.
+Handle `"loop"` mode in branch names (`dex/loop/{date}-{id}`) and PR titles.
 
 #### Step 7: Update UI
 - Mode selector (Build / Loop) in App.tsx
@@ -222,7 +222,7 @@ Handle `"loop"` mode in branch names (`ralph/loop/{date}-{id}`) and PR titles.
 - Hook state: `currentCycle`, `currentStage`, `isClarifying`, `loopMode`
 
 #### Step 8: Add guardrails to prompts ("Signs" architecture)
-Ralph-style prompt structure for the implement stage:
+Ralph Wiggum-style prompt structure for the implement stage:
 ```
 0a. Study the spec at {specPath}/spec.md
 0b. Study the existing codebase using subagents

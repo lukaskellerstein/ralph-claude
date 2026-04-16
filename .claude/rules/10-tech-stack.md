@@ -28,7 +28,7 @@ description: "Reference: Technology stack — Electron, React 18, Vite, Claude A
 ## IPC
 
 - **Pattern**: `ipcMain.handle` for request-response, `webContents.send` for event streaming
-- **Bridge**: `contextBridge.exposeInMainWorld("ralphAPI", ...)` in preload script
+- **Bridge**: `contextBridge.exposeInMainWorld("dexAPI", ...)` in preload script
 
 ## Scripting & Automation
 

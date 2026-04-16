@@ -1,4 +1,4 @@
-# Ralph-Claude: Autonomous Software Engineering at Scale
+# Dex: Autonomous Software Engineering at Scale
 
 ## The Problem
 
@@ -20,7 +20,7 @@ The fundamental challenges:
 
 ## The Three Pillars
 
-Ralph-Claude synthesizes three independent innovations into a unified system:
+Dex synthesizes three independent innovations into a unified system:
 
 ```mermaid
 graph TB
@@ -48,7 +48,7 @@ graph TB
         AS4[settingSources for Config Loading]
     end
 
-    RW --> RC[Ralph-Claude]
+    RW --> RC[Dex]
     SK --> RC
     AS --> RC
 
@@ -124,9 +124,9 @@ const result = await query({
 
 **What the SDK lacks:** No loop, no planning, no specs, no UI. It's a library.
 
-## The Synthesis: Ralph-Claude
+## The Synthesis: Dex
 
-Ralph-Claude combines these three pillars into an autonomous software engineering system that can take a vague description and build a complete project over hours or days — without human intervention.
+Dex combines these three pillars into an autonomous software engineering system that can take a vague description and build a complete project over hours or days — without human intervention.
 
 ```mermaid
 flowchart TB
@@ -282,7 +282,7 @@ flowchart TB
     style SKIP fill:#6b7280,color:#fff
 ```
 
-Key innovation over Ralph: **browser-based E2E verification**. Ralph only runs build + typecheck. Ralph-Claude opens the app in a browser (via MCP tools), walks user flows, takes screenshots, and verifies the UI actually works. This catches an entire class of bugs — rendering issues, broken interactions, missing styles — that compile-and-test backpressure misses.
+Key innovation over Ralph: **browser-based E2E verification**. Ralph only runs build + typecheck. Dex opens the app in a browser (via MCP tools), walks user flows, takes screenshots, and verifies the UI actually works. This catches an entire class of bugs — rendering issues, broken interactions, missing styles — that compile-and-test backpressure misses.
 
 ### Acceptance-Driven Test Derivation
 
@@ -406,8 +406,8 @@ flowchart LR
 
     subgraph "Cross-Cycle Persistence"
         LEARN[".claude/rules/learnings.md"]
-        DBFILE["~/.ralph-claude/data.db"]
-        LOGS["~/.ralph-claude/logs/"]
+        DBFILE["~/.dex/data.db"]
+        LOGS["~/.dex/logs/"]
     end
 
     DESC --> FP
@@ -430,7 +430,7 @@ Key design decision: **`full_plan.md` is immutable**. The loop never modifies it
 
 ### vs. Interactive AI Coding (Cursor, Copilot, Claude Code manual)
 
-| Dimension | Interactive | Ralph-Claude |
+| Dimension | Interactive | Dex |
 |-----------|------------|--------------|
 | **Scale** | One task at a time, human-driven | Dozens of features, autonomous |
 | **Context** | Single session, degrades over time | Fresh context per stage, always in "smart zone" |
@@ -442,7 +442,7 @@ Key design decision: **`full_plan.md` is immutable**. The loop never modifies it
 
 ### vs. Original Ralph Wiggum
 
-| Dimension | Ralph Wiggum | Ralph-Claude |
+| Dimension | Ralph Wiggum | Dex |
 |-----------|-------------|--------------|
 | **Interface** | Bash script, watch terminal | Desktop app with live trace |
 | **Planning** | Free-form TODO list | Spec-kit: spec → plan → tasks pipeline |
@@ -459,7 +459,7 @@ Key design decision: **`full_plan.md` is immutable**. The loop never modifies it
 
 ### vs. Other Agent Frameworks (Devin, SWE-Agent, OpenHands)
 
-| Dimension | Agent Frameworks | Ralph-Claude |
+| Dimension | Agent Frameworks | Dex |
 |-----------|-----------------|--------------|
 | **Context strategy** | Single long session | Fresh context per stage (Ralph philosophy) |
 | **Planning depth** | Varies, usually shallow | Spec-kit's full specify → plan → tasks pipeline |
@@ -474,7 +474,7 @@ Key design decision: **`full_plan.md` is immutable**. The loop never modifies it
 
 Neither Ralph Wiggum nor any other autonomous coding approach solves the **specification quality problem**: garbage in, garbage out. If the agent starts with a vague description, it builds the wrong thing — and burns budget doing it.
 
-Ralph-Claude's Phase A is a thorough interactive session that transforms a vague idea into a comprehensive plan:
+Dex's Phase A is a thorough interactive session that transforms a vague idea into a comprehensive plan:
 
 ```mermaid
 flowchart TB
@@ -511,7 +511,7 @@ Only when all items are covered does Phase B begin. This front-loads the human e
 
 ## Summary
 
-Ralph-Claude is the convergence of three ideas:
+Dex is the convergence of three ideas:
 
 1. **Ralph Wiggum's loop philosophy** — context isolation, self-improvement, eventual consistency through iteration
 2. **Spec-Kit's structured planning** — specifications before code, constitution-governed, acceptance-driven testing

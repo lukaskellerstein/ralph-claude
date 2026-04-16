@@ -157,7 +157,7 @@ export function buildGapAnalysisPrompt(
     ? existingSpecs.map((s) => `  - ${s}`).join("\n")
     : "  (none yet)";
 
-  return `You are a gap analysis agent for the Ralph autonomous loop. Your job is to compare the full project plan against existing feature specifications and determine what to do next.
+  return `You are a gap analysis agent for the Dex autonomous loop. Your job is to compare the full project plan against existing feature specifications and determine what to do next.
 
 ## Instructions
 
@@ -309,7 +309,7 @@ export function buildImplementPrompt(
 
   return `/speckit-implement ${specPath} --phase ${phase.number}
 
-## Ralph Loop Guardrails
+## Dex Loop Guardrails
 
 - Read ${fullPlanPath} for full project context (READ-ONLY — do not modify GOAL.md or GOAL_clarified.md)
 - Orient: You are implementing Phase ${phase.number}: ${phase.name}

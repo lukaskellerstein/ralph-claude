@@ -1,5 +1,5 @@
 {
-  "name": "ralph-claude",
+  "name": "dex",
   "version": "0.1.0",
   "description": "Electron desktop app that orchestrates fresh Claude Code instances per spec-kit phase",
   "main": "dist/main/index.js",

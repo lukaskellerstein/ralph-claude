@@ -175,7 +175,7 @@ export default function App() {
   }, []);
 
   const handlePickFolder = useCallback(async () => {
-    const folder = await window.ralphAPI.pickFolder();
+    const folder = await window.dexAPI.pickFolder();
     if (folder) {
       setNewProjectFolder(folder);
       setNewProjectError(null);
@@ -215,7 +215,7 @@ export default function App() {
       ...rest,
       ...(resumeRunId ? { resumeRunId } : {}),
     };
-    window.ralphAPI.startRun(config);
+    window.dexAPI.startRun(config);
   };
 
   const handleSelectSpec = (spec: string) => {
@@ -266,7 +266,7 @@ export default function App() {
       phases: "all",
       runAllSpecs: true,
     };
-    window.ralphAPI.startRun(config);
+    window.dexAPI.startRun(config);
   };
 
 
@@ -615,7 +615,7 @@ export default function App() {
         onRefreshProject={project.refreshProject}
         onDeselectSpec={handleDeselectSpec}
         onStart={handleStart}
-        onStop={() => window.ralphAPI.stopRun()}
+        onStop={() => window.dexAPI.stopRun()}
         content={content}
       />
       {orchestrator.pendingQuestion && (

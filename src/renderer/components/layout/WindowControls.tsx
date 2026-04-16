@@ -5,8 +5,8 @@ export function WindowControls() {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
-    window.ralphAPI.isMaximized().then(setIsMaximized);
-    return window.ralphAPI.onMaximizedChange(setIsMaximized);
+    window.dexAPI.isMaximized().then(setIsMaximized);
+    return window.dexAPI.onMaximizedChange(setIsMaximized);
   }, []);
 
   const btnStyle: React.CSSProperties = {
@@ -23,7 +23,7 @@ export function WindowControls() {
     <div style={{ display: "flex", WebkitAppRegion: "no-drag" } as React.CSSProperties}>
       <button
         style={btnStyle}
-        onClick={() => window.ralphAPI.minimize()}
+        onClick={() => window.dexAPI.minimize()}
         onMouseEnter={(e) => {
           e.currentTarget.style.background = "var(--surface-hover)";
           e.currentTarget.style.color = "var(--foreground)";
@@ -38,7 +38,7 @@ export function WindowControls() {
       </button>
       <button
         style={btnStyle}
-        onClick={() => window.ralphAPI.maximize()}
+        onClick={() => window.dexAPI.maximize()}
         onMouseEnter={(e) => {
           e.currentTarget.style.background = "var(--surface-hover)";
           e.currentTarget.style.color = "var(--foreground)";
@@ -53,7 +53,7 @@ export function WindowControls() {
       </button>
       <button
         style={btnStyle}
-        onClick={() => window.ralphAPI.close()}
+        onClick={() => window.dexAPI.close()}
         onMouseEnter={(e) => {
           e.currentTarget.style.background = "hsl(0, 72%, 50%)";
           e.currentTarget.style.color = "#fff";

@@ -15,13 +15,13 @@ Sync Impact Report
 - Follow-up TODOs: none
 -->
 
-# Ralph Claude Constitution
+# Dex Constitution
 
 ## Core Principles
 
 ### I. Clean-Context Orchestration
 
-Ralph Claude spawns a fresh Claude Code instance for each phase
+Dex spawns a fresh Claude Code instance for each phase
 of spec-kit work. Every agent starts with a clean context window
 to prevent token bloat and context drift.
 
@@ -57,7 +57,7 @@ reported. No exceptions.
 - Core engine changes: `npx tsc --noEmit` + unit tests +
   UI verification if behavior-affecting.
 - IPC/main process changes: verify app starts, test IPC
-  round-trips via `window.ralphAPI.*`.
+  round-trips via `window.dexAPI.*`.
 - If a test fails: fix, retest, repeat. Escalate to the user
   only after investigation.
 
@@ -104,7 +104,7 @@ Understand → Plan → Implement → Test → Report.
   `query()` async generator with hook callbacks.
 - **IPC**: `ipcMain.handle` for request-response,
   `webContents.send` for event streaming,
-  `contextBridge.exposeInMainWorld("ralphAPI", ...)` in preload.
+  `contextBridge.exposeInMainWorld("dexAPI", ...)` in preload.
 - **Scripts**: TypeScript/Node.js by default; shell scripts
   only for trivial one-liners.
 - No git commits unless the user explicitly requests them.
@@ -113,7 +113,7 @@ Understand → Plan → Implement → Test → Report.
 
 1. The user runs `dev-setup.sh` manually — agents MUST NOT
    start the dev server.
-2. Process logs are at `/tmp/ralph-claude-logs/` (`vite.log`,
+2. Process logs are at `/tmp/dex-logs/` (`vite.log`,
    `electron.log`). Read these when debugging.
 3. MCP server `electron-chrome` on CDP port 9333 is the
    primary verification tool for UI changes.
@@ -124,7 +124,7 @@ Understand → Plan → Implement → Test → Report.
 ## Governance
 
 This constitution is the highest-authority document for
-Ralph Claude development. Where it conflicts with other
+Dex development. Where it conflicts with other
 guidance, the constitution prevails.
 
 - **Amendments** require: (1) a documented rationale,
