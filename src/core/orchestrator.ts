@@ -49,6 +49,7 @@ import {
   resolveWorkingTreeConflict,
   reconcileState,
   migrateFromDbResume,
+  STAGE_ORDER,
 } from "./state.js";
 import type { DexState } from "./state.js";
 import {
@@ -2196,8 +2197,19 @@ async function runLoop(
     // ── Gap Analysis — Deterministic Manifest Walk ──
     let decision: GapAnalysisDecision;
     if (resumeSpecDir && cycleNumber === cyclesCompleted + 1) {
-      decision = { type: "RESUME_FEATURE", specDir: resumeSpecDir };
-      rlog.run("INFO", `runLoop: resume — skipping gap analysis, using RESUME_FEATURE for ${resumeSpecDir}`);
+      // Mid-cycle resume: pick RESUME_AT_STAGE when a pre-implement stage
+      // (specify or plan) completed before the abort. A completed "tasks"
+      // stage means the pre-implement triad is done → classic RESUME_FEATURE
+      // (jump straight to implement). Any later stage or null also maps to
+      // RESUME_FEATURE since implement/verify/learnings have their own
+      // resume paths.
+      if (resumeLastStage === "specify" || resumeLastStage === "plan") {
+        decision = { type: "RESUME_AT_STAGE", specDir: resumeSpecDir, resumeAtStage: resumeLastStage };
+        rlog.run("INFO", `runLoop: resume — using RESUME_AT_STAGE(${resumeLastStage}) for ${resumeSpecDir}`);
+      } else {
+        decision = { type: "RESUME_FEATURE", specDir: resumeSpecDir };
+        rlog.run("INFO", `runLoop: resume — skipping gap analysis, using RESUME_FEATURE for ${resumeSpecDir}`);
+      }
       const traceId = crypto.randomUUID();
       createPhaseTrace({ id: traceId, runId, specDir: resumeSpecDir, phaseNumber: cycleNumber, phaseName: "loop:gap_analysis" });
       emit({ type: "stage_started", runId, cycleNumber, stage: "gap_analysis", phaseTraceId: traceId });
@@ -2280,7 +2292,9 @@ async function runLoop(
     // Record the cycle
     const decisionType = decision.type;
     const featureName = decision.type === "NEXT_FEATURE" ? decision.name : null;
-    let specDir = decision.type === "RESUME_FEATURE" || decision.type === "REPLAN_FEATURE"
+    let specDir = decision.type === "RESUME_FEATURE"
+      || decision.type === "REPLAN_FEATURE"
+      || decision.type === "RESUME_AT_STAGE"
       ? decision.specDir
       : null;
     let cycleFailed = false;
@@ -2352,12 +2366,41 @@ async function runLoop(
 
     let cycleCost = 0;
 
+    // Closed over the finalized `decision` (after force-replan promotion).
+    // Centralizes the decision→stages mapping; only callers for plan/tasks
+    // use it today. The switch has no `default` — TypeScript enforces
+    // exhaustiveness if a new decision variant is added.
+    // GAPS_COMPLETE is already handled by the early `break` above, so the
+    // narrowed type at this point excludes it — the switch below is
+    // exhaustive over the remaining four variants.
+    const shouldRun = (stage: LoopStageType): boolean => {
+      switch (decision.type) {
+        case "NEXT_FEATURE":
+          return stage !== "gap_analysis";
+        case "REPLAN_FEATURE":
+          return stage === "plan" || stage === "tasks" || stage === "implement"
+            || stage === "verify" || stage === "learnings";
+        case "RESUME_FEATURE":
+          return stage === "implement" || stage === "verify" || stage === "learnings";
+        case "RESUME_AT_STAGE":
+          return STAGE_ORDER.indexOf(stage) > STAGE_ORDER.indexOf(decision.resumeAtStage);
+      }
+    };
+
     try {
-      // ── RESUME_FEATURE: emit synthetic completed events for skipped stages ──
+      // Emit synthetic completed events for stages that won't actually run,
+      // so the UI stepper shows them ✓ instead of missing/stuck.
       if (decision.type === "RESUME_FEATURE") {
         emitSkippedStage("specify", cycleNumber);
         emitSkippedStage("plan", cycleNumber);
         emitSkippedStage("tasks", cycleNumber);
+      } else if (decision.type === "RESUME_AT_STAGE") {
+        const resumeOrdinal = STAGE_ORDER.indexOf(decision.resumeAtStage);
+        for (const s of ["specify", "plan", "tasks"] as const) {
+          if (STAGE_ORDER.indexOf(s) <= resumeOrdinal) {
+            emitSkippedStage(s, cycleNumber);
+          }
+        }
       }
 
       // ── NEXT_FEATURE: specify → plan → tasks → implement → verify → learnings ──
@@ -2371,8 +2414,9 @@ async function runLoop(
         const specifyResult = await runStage(config, specifyPrompt, emit, rlog, runId, cycleNumber, "specify");
         cycleCost += specifyResult.cost;
 
-        if (abortController?.signal.aborted) throw new AbortError();
-
+        // IMPORTANT: do NOT abort-check here before persisting the new spec
+        // dir. If the user clicked Stop during specify, the dir exists on
+        // disk and the next resume needs currentSpecDir set to recover.
         // Discover the newly created spec directory and link to manifest
         specDir = discoverNewSpecDir(config.projectDir, knownSpecs);
         if (!specDir) {
@@ -2381,16 +2425,23 @@ async function runLoop(
         rlog.run("INFO", `runLoop: new spec directory: ${specDir}`);
         updateFeatureSpecDir(config.projectDir, decision.featureId, specDir);
 
-        // Update FeatureArtifacts.status to "specifying"
+        // Persist the new spec directory to state immediately so a pause
+        // between specify and plan is recoverable — the emitter reads
+        // currentSpecDir on the next resume to pick RESUME_AT_STAGE.
+        // Must run BEFORE the abort check below, otherwise a Stop click
+        // right after specify completes orphans the new spec dir.
         if (activeProjectDir) {
-          updateState(activeProjectDir, {
+          await updateState(activeProjectDir, {
+            currentSpecDir: specDir,
             artifacts: { features: { [specDir]: { specDir, status: "specifying", spec: null, plan: null, tasks: null, lastImplementedPhase: 0 } } },
           } as never).catch(() => {});
         }
+
+        if (abortController?.signal.aborted) throw new AbortError();
       }
 
-      // Plan (T031) — for NEXT_FEATURE and REPLAN_FEATURE
-      if (decision.type === "NEXT_FEATURE" || decision.type === "REPLAN_FEATURE") {
+      // Plan (T031) — runs for NEXT_FEATURE, REPLAN_FEATURE, and RESUME_AT_STAGE(specify)
+      if (shouldRun("plan")) {
         if (abortController?.signal.aborted) throw new AbortError();
 
         const targetSpecDir = specDir!;
@@ -2412,8 +2463,17 @@ async function runLoop(
         cycleCost += planResult.cost;
 
         if (abortController?.signal.aborted) throw new AbortError();
+      }
 
-        // Tasks (T031)
+      // Tasks (T031) — runs for NEXT_FEATURE, REPLAN_FEATURE, and RESUME_AT_STAGE(specify|plan)
+      if (shouldRun("tasks")) {
+        if (abortController?.signal.aborted) throw new AbortError();
+
+        const targetSpecDir = specDir!;
+        const specPath = targetSpecDir.startsWith("/")
+          ? targetSpecDir
+          : path.join(config.projectDir, targetSpecDir);
+
         if (currentRunState) {
           currentRunState.currentStage = "tasks";
         }
@@ -2724,7 +2784,12 @@ async function runLoop(
     cumulativeCost += cycleCost;
     const cycleAborted = abortController?.signal.aborted ?? false;
     const cycleStatus = cycleAborted ? "stopped" : cycleFailed ? "failed" : "completed";
-    cyclesCompleted++;
+    // User aborts preserve the cycle counter so resume re-enters the same
+    // cycleNumber. Unrecoverable failures still advance — otherwise a poison
+    // cycle would retry forever.
+    if (!cycleAborted) {
+      cyclesCompleted++;
+    }
 
     updateLoopCycle(cycleId, cycleStatus, cycleCost, Date.now() - cycleStart);
     updateRunLoopsCompleted(runId, cyclesCompleted);
