@@ -1,5 +1,12 @@
 # Fast-Path Testing via Fixture Branches
 
+> **⚠️ Superseded by 008-interactive-checkpoint.** The dedicated `fixture/*` branch
+> scheme has been replaced by the 008 checkpoint system. Tags of the form
+> `checkpoint/cycle-N-after-<stage>` now stand in for the old fixture/\* branches.
+> `scripts/reset-example-to.sh` accepts any checkpoint name directly (`list`,
+> `clean`, or `<name>`). See `specs/008-interactive-checkpoint/` and the updated
+> `.claude/rules/06-testing.md` §4c.
+
 ## Context
 
 Every end-to-end test of the Dex Loop today starts from `git clean -fdx` on `dex-ecommerce` and walks through **prerequisites → clarification (product → technical → synthesis) → constitution → manifest_extraction → gap_analysis → specify → plan → tasks → implement**. The first six of those stages are LLM-heavy and add ~10–15 minutes and non-trivial token cost to every run — even when the change under test only touches the `implement` loop or later stages.

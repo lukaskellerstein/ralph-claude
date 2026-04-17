@@ -56,14 +56,22 @@ Per-project (inside each opened project):
 
 ```text
 <projectDir>/.dex/
-├── state.json               committed
+├── state.json               gitignored (008 — runtime cache, local only)
 ├── state.lock               gitignored (PID)
 ├── feature-manifest.json    committed
 ├── learnings.md             committed
+├── variant-groups/          gitignored — one <groupId>.json per in-flight Try N ways
+├── worktrees/               gitignored — parallel-variant worktrees for spec-only stages
 └── runs/                    committed by default — one <runId>.json per run
     └── <runId>.json         full audit summary (RunRecord)
 ```
 
-All files in `<projectDir>/.dex/` are committable except `state.lock`. Teams who want private traces add `.dex/runs/` to `.gitignore` themselves. Diagnostics paths are documented in full in `.claude/rules/06-testing.md` section 4f.
+History layer (committed to git, shared via push):
+
+- `checkpoint/<name>` tags — named save points (one per completed stage)
+- `attempt-<ts>[-<letter>]` branches — Go back / Try again / variant scratch branches (auto-pruned after 30 days)
+- `capture/<date>-<slice>` branches — Record-mode canonical anchors
+
+All files in `<projectDir>/.dex/` are committable except those marked `gitignored`. Teams who want private traces add `.dex/runs/` to `.gitignore` themselves. Diagnostics paths are documented in full in `.claude/rules/06-testing.md` section 4f.
 
 <!-- MANUAL ADDITIONS END -->

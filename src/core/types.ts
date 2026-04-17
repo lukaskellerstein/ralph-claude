@@ -189,6 +189,10 @@ export interface RunConfig {
   // Structured outputs configuration
   maxVerifyRetries?: number;       // default: 1 — fix-reverify attempts per cycle
   maxLearningsPerCategory?: number; // default: 20 — cap per category in learnings.md
+
+  // Step mode: when true, orchestrator pauses after every stage awaiting
+  // user Keep/Try again/Try N ways decision. Distinct from user_abort.
+  stepMode?: boolean;
 }
 
 // ── Events: Orchestrator → UI ──
@@ -264,6 +268,40 @@ export type OrchestratorEvent =
   | { type: "user_input_response"; requestId: string; answers: Record<string, string> }
   // State reconciliation events
   | { type: "state_reconciling"; runId: string }
-  | { type: "state_reconciled"; runId: string; driftSummary: DriftSummary };
+  | { type: "state_reconciled"; runId: string; driftSummary: DriftSummary }
+  // Interactive checkpoint events (008)
+  | {
+      type: "stage_candidate";
+      runId: string;
+      cycleNumber: number;
+      stage: LoopStageType;
+      checkpointTag: string;
+      candidateSha: string;
+      attemptBranch: string;
+    }
+  | {
+      type: "checkpoint_promoted";
+      runId: string;
+      checkpointTag: string;
+      sha: string;
+    }
+  | {
+      type: "paused";
+      runId: string;
+      reason: "user_abort" | "step_mode" | "budget" | "failure";
+      stage?: LoopStageType;
+    }
+  | {
+      type: "variant_group_resume_needed";
+      projectDir: string;
+      groupId: string;
+      stage: LoopStageType;
+      pendingCount: number;
+      runningCount: number;
+    }
+  | {
+      type: "variant_group_complete";
+      groupId: string;
+    };
 
 export type EmitFn = (event: OrchestratorEvent) => void;

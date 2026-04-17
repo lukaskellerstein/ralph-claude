@@ -19,11 +19,17 @@ export type DeepPartial<T> = {
   [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
 };
 
+export type PauseReason = "user_abort" | "step_mode" | "budget" | "failure";
+
+export interface DexUiPrefs {
+  recordMode?: boolean;
+  pauseAfterStage?: boolean;
+}
+
 export interface DexState {
   version: 1;
   runId: string;
   status: "running" | "paused" | "completed" | "failed";
-  branchName: string;
   baseBranch: string;
   mode: "loop" | "build" | "plan";
 
@@ -53,11 +59,18 @@ export interface DexState {
   // Artifact integrity manifest
   artifacts: ArtifactManifest;
 
-  // Git checkpoint
-  checkpoint: CheckpointRef;
+  // Last commit observed by the orchestrator — cache of commitCheckpoint()'s return.
+  // Not to be confused with the user-facing "checkpoint" domain term (tag-backed save points).
+  lastCommit: CheckpointRef;
 
   // Pending user input (persisted so crash doesn't lose unanswered questions)
   pendingQuestion: PendingQuestion | null;
+
+  // Reason for status === "paused" (typed; present iff paused).
+  pauseReason?: PauseReason;
+
+  // Session UI preferences — Record mode, Pause-after-stage toggles.
+  ui?: DexUiPrefs;
 
   // Timestamps
   startedAt: string;
@@ -190,8 +203,7 @@ export async function loadState(projectDir: string): Promise<DexState | null> {
   const filePath = statePath(projectDir);
   try {
     const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    if (raw.version !== 1) return null;
-    return raw as DexState;
+    return stripRemovedFields(raw);
   } catch {
     return null;
   }
@@ -225,14 +237,13 @@ export async function hashFile(filePath: string): Promise<string> {
 export function createInitialState(
   config: RunConfig,
   runId: string,
-  branchName: string,
+  _branchName: string,
   baseBranch: string
 ): DexState {
   return {
     version: 1,
     runId,
     status: "running",
-    branchName,
     baseBranch,
     mode: config.mode,
     phase: "prerequisites",
@@ -263,7 +274,7 @@ export function createInitialState(
       constitution: null,
       features: {},
     },
-    checkpoint: {
+    lastCommit: {
       sha: "",
       timestamp: new Date().toISOString(),
     },
@@ -271,6 +282,20 @@ export function createInitialState(
     startedAt: new Date().toISOString(),
     pausedAt: null,
   };
+}
+
+// ── Strip removed fields from older on-disk state ────────
+
+function stripRemovedFields(raw: Record<string, unknown>): DexState | null {
+  if (raw.version !== 1) return null;
+  // Pre-008: rename `checkpoint` → `lastCommit` if present.
+  if (raw.checkpoint && !raw.lastCommit) {
+    raw.lastCommit = raw.checkpoint;
+  }
+  // Pre-008: drop `branchName` silently.
+  delete raw.branchName;
+  delete raw.checkpoint;
+  return raw as unknown as DexState;
 }
 
 // ── Stale State Detection ──
@@ -283,13 +308,12 @@ export async function detectStaleState(
   if (state.status === "completed") return "completed";
 
   // Paused state is always resumable — the user explicitly asked to continue.
-  // Branch mismatch (e.g., speckit switched to a feature branch during specify)
-  // is expected and shouldn't invalidate the state.
+  // Branch is derived from git, not stored, so mismatch is not a staleness signal.
   if (state.status === "paused") return "fresh";
 
   try {
-    const currentBranch = getCurrentBranch(projectDir);
-    if (state.branchName && state.branchName !== currentBranch) return "stale";
+    // Confirm we can read the current branch — failure implies a broken repo.
+    getCurrentBranch(projectDir);
   } catch {
     return "stale";
   }
@@ -399,20 +423,19 @@ export async function resolveWorkingTreeConflict(projectDir: string): Promise<De
   const cmOrdinal = stageOrdinal(committed.lastCompletedStage);
   const chosen = wtOrdinal >= cmOrdinal ? workingTree : committed;
 
-  // Validate: checkpoint SHA must exist in git history
-  if (chosen.checkpoint.sha) {
+  // Validate: lastCommit SHA must exist in git history
+  if (chosen.lastCommit.sha) {
     try {
-      execSync(`git cat-file -t ${chosen.checkpoint.sha}`, {
+      execSync(`git cat-file -t ${chosen.lastCommit.sha}`, {
         cwd: projectDir,
         stdio: "pipe",
       });
       return chosen;
     } catch {
-      // Chosen state has invalid checkpoint — try the other
       const fallback = chosen === workingTree ? committed : workingTree;
-      if (fallback.checkpoint.sha) {
+      if (fallback.lastCommit.sha) {
         try {
-          execSync(`git cat-file -t ${fallback.checkpoint.sha}`, {
+          execSync(`git cat-file -t ${fallback.lastCommit.sha}`, {
             cwd: projectDir,
             stdio: "pipe",
           });
@@ -421,12 +444,10 @@ export async function resolveWorkingTreeConflict(projectDir: string): Promise<De
           return null;
         }
       }
-      // Fallback has no checkpoint SHA — it's the initial state, accept it
       return fallback;
     }
   }
 
-  // No checkpoint SHA — initial state, accept it
   return chosen;
 }
 
@@ -454,19 +475,18 @@ export async function reconcileState(
     pendingQuestionReask: false,
   };
 
-  // 1. Git checkpoint comparison
-  if (state.checkpoint.sha) {
+  // 1. Git lastCommit comparison
+  if (state.lastCommit.sha) {
     try {
       const currentHead = getHeadSha(projectDir);
-      if (currentHead !== state.checkpoint.sha) {
-        const extra = countCommitsBetween(projectDir, state.checkpoint.sha, currentHead);
+      if (currentHead !== state.lastCommit.sha) {
+        const extra = countCommitsBetween(projectDir, state.lastCommit.sha, currentHead);
         driftSummary.extraCommits = extra;
-        warnings.push(`${extra} commit(s) added since last checkpoint`);
-        // Update checkpoint to current HEAD
-        statePatches.checkpoint = { sha: currentHead, timestamp: new Date().toISOString() };
+        warnings.push(`${extra} commit(s) added since last orchestrator commit`);
+        statePatches.lastCommit = { sha: currentHead, timestamp: new Date().toISOString() };
       }
     } catch {
-      warnings.push("Could not compare git checkpoint — proceeding with current state");
+      warnings.push("Could not compare last commit — proceeding with current state");
     }
   }
 
@@ -653,79 +673,16 @@ export async function reconcileState(
   return result;
 }
 
-// ── DB Migration ──
+// ── isLockedByAnother probe ──
 
-export async function migrateFromDbResume(
-  projectDir: string,
-  dbHelpers: {
-    getRun: (runId: string) => { run: { id: string; project_dir: string; mode: string; model: string; total_cost_usd: number | null; status: string; created_at: string }; phases: Array<{ phase_name: string; phase_number: number; spec_dir: string }> } | null;
-    getLoopCycles: (runId: string) => Array<{ cycle_number: number; spec_dir: string | null; feature_name: string | null; status: string }>;
-    getLastStoppedRunId: (projectDir: string) => string | null;
-  }
-): Promise<DexState | null> {
-  // Only migrate if no state file exists
-  const existing = await loadState(projectDir);
-  if (existing) return null;
-
-  const runId = dbHelpers.getLastStoppedRunId(projectDir);
-  if (!runId) return null;
-
-  const runData = dbHelpers.getRun(runId);
-  if (!runData) return null;
-
-  const cycles = dbHelpers.getLoopCycles(runId);
-  const lastCycle = cycles[cycles.length - 1];
-
-  // Reconstruct state from DB fields
-  let branchName = "";
+export function isLockedByAnother(projectDir: string): boolean {
+  const lp = lockPath(projectDir);
   try {
-    branchName = getCurrentBranch(projectDir);
+    const raw = fs.readFileSync(lp, "utf-8");
+    const lock: LockFile = JSON.parse(raw);
+    if (isLockStale(lock)) return false;
+    return lock.pid !== process.pid;
   } catch {
-    branchName = "unknown";
+    return false;
   }
-
-  const state = createInitialState(
-    {
-      projectDir,
-      specDir: "",
-      mode: (runData.run.mode as "loop" | "build" | "plan") ?? "loop",
-      model: runData.run.model ?? "claude-opus-4-6",
-      maxIterations: 50,
-      maxTurns: 75,
-      phases: "all",
-    },
-    runData.run.id,
-    branchName,
-    "main"
-  );
-
-  state.status = "paused";
-  state.cumulativeCostUsd = runData.run.total_cost_usd ?? 0;
-  state.cyclesCompleted = lastCycle ? lastCycle.cycle_number - 1 : 0;
-  state.currentCycleNumber = lastCycle?.cycle_number ?? 0;
-  state.currentSpecDir = lastCycle?.spec_dir ?? null;
-  state.startedAt = runData.run.created_at;
-  state.pausedAt = new Date().toISOString();
-
-  // Determine last completed stage from phase traces
-  const loopPhases = runData.phases
-    .filter(pt => pt.phase_name.startsWith("loop:"))
-    .sort((a, b) => a.phase_name.localeCompare(b.phase_name));
-  const lastPhase = loopPhases[loopPhases.length - 1];
-  if (lastPhase) {
-    state.lastCompletedStage = lastPhase.phase_name.replace("loop:", "") as LoopStageType;
-  }
-
-  // Hash current artifacts on disk (best-effort)
-  const goalPath = path.join(projectDir, "GOAL_clarified.md");
-  if (fs.existsSync(goalPath)) {
-    state.artifacts.clarifiedGoal = {
-      path: "GOAL_clarified.md",
-      sha256: await hashFile(goalPath),
-      completedAt: new Date().toISOString(),
-    };
-    state.clarificationCompleted = true;
-  }
-
-  return state;
 }

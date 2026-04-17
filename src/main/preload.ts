@@ -70,6 +70,44 @@ contextBridge.exposeInMainWorld("dexAPI", {
   getSpecAggregateStats: (projectDir: string, specDir: string) =>
     ipcRenderer.invoke("history:get-spec-aggregate-stats", projectDir, specDir),
 
+  // Checkpoints (008)
+  checkpoints: {
+    listTimeline: (projectDir: string) =>
+      ipcRenderer.invoke("checkpoints:listTimeline", projectDir),
+    isLockedByAnother: (projectDir: string) =>
+      ipcRenderer.invoke("checkpoints:isLockedByAnother", projectDir) as Promise<boolean>,
+    checkIsRepo: (projectDir: string) =>
+      ipcRenderer.invoke("checkpoints:checkIsRepo", projectDir) as Promise<boolean>,
+    checkIdentity: (projectDir: string) =>
+      ipcRenderer.invoke("checkpoints:checkIdentity", projectDir),
+    estimateVariantCost: (projectDir: string, stage: string, variantCount: number) =>
+      ipcRenderer.invoke("checkpoints:estimateVariantCost", projectDir, stage, variantCount),
+    readPendingVariantGroups: (projectDir: string) =>
+      ipcRenderer.invoke("checkpoints:readPendingVariantGroups", projectDir),
+    promote: (projectDir: string, tag: string, sha: string) =>
+      ipcRenderer.invoke("checkpoints:promote", projectDir, tag, sha),
+    goBack: (projectDir: string, tag: string, options?: { force?: "save" | "discard" }) =>
+      ipcRenderer.invoke("checkpoints:goBack", projectDir, tag, options),
+    spawnVariants: (projectDir: string, request: { fromCheckpoint: string; variantLetters: string[]; stage: string }) =>
+      ipcRenderer.invoke("checkpoints:spawnVariants", projectDir, request),
+    deleteAttempt: (projectDir: string, branch: string) =>
+      ipcRenderer.invoke("checkpoints:deleteAttempt", projectDir, branch),
+    writeVariantGroup: (projectDir: string, group: Record<string, unknown>) =>
+      ipcRenderer.invoke("checkpoints:writeVariantGroup", projectDir, group),
+    cleanupVariantGroup: (projectDir: string, groupId: string, kind: "keep" | "discard", pickedLetter?: string) =>
+      ipcRenderer.invoke("checkpoints:cleanupVariantGroup", projectDir, groupId, kind, pickedLetter),
+    initRepo: (projectDir: string) =>
+      ipcRenderer.invoke("checkpoints:initRepo", projectDir),
+    setIdentity: (projectDir: string, name: string, email: string) =>
+      ipcRenderer.invoke("checkpoints:setIdentity", projectDir, name, email),
+    setRecordMode: (projectDir: string, on: boolean) =>
+      ipcRenderer.invoke("checkpoints:setRecordMode", projectDir, on),
+    setPauseAfterStage: (projectDir: string, on: boolean) =>
+      ipcRenderer.invoke("checkpoints:setPauseAfterStage", projectDir, on),
+    compareAttempts: (projectDir: string, branchA: string, branchB: string, stage: string | null) =>
+      ipcRenderer.invoke("checkpoints:compareAttempts", projectDir, branchA, branchB, stage),
+  },
+
   // Window controls
   minimize: () => ipcRenderer.invoke("window-minimize"),
   maximize: () => ipcRenderer.invoke("window-maximize"),

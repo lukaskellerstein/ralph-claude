@@ -21,5 +21,11 @@
     }
   },
   "include": ["src/main/**/*", "src/core/**/*"],
-  "exclude": ["src/renderer/**/*", "node_modules", "dist"]
+  "exclude": [
+    "src/renderer/**/*",
+    "src/core/__tests__/**/*",
+    "src/**/*.test.ts",
+    "node_modules",
+    "dist"
+  ]
 }
