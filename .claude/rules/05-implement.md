@@ -7,7 +7,6 @@ description: "Step 4: Implement — coding rules, Electron/React dev workflow"
 Write clean code from the start. Follow these rules during implementation:
 
 - Do NOT commit via `git` unless explicitly instructed by the user
-- Do NOT start the dev server — the user runs it manually
 - When creating diagrams or graphs, use `mermaid`
 - Write clean code from the start — don't plan to "clean it up later"
 - Refactor continuously — improve code structure immediately when you see issues

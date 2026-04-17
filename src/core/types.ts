@@ -100,6 +100,7 @@ export type GapAnalysisDecision =
   | { type: "NEXT_FEATURE"; name: string; description: string; featureId: number }
   | { type: "RESUME_FEATURE"; specDir: string }
   | { type: "REPLAN_FEATURE"; specDir: string }
+  | { type: "RESUME_AT_STAGE"; specDir: string; resumeAtStage: LoopStageType }
   | { type: "GAPS_COMPLETE" };
 
 export interface LoopCycle {

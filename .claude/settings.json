@@ -22,7 +22,13 @@
       "WebFetch",
       "WebSearch",
       "Write",
-      "mcp__electron-chrome"
+      "mcp__electron-chrome",
+      "mcp__plugin_media-plugin_media-mcp",                                                                                                        
+      "mcp__plugin_media-plugin_ElevenLabs",                                                                                                       
+      "mcp__plugin_media-plugin_mermaid",                                                                                                          
+      "mcp__plugin_media-plugin_drawio",                                                                                                           
+      "mcp__plugin_media-plugin_media-playwright",                                                                                                 
+      "mcp__plugin_web-design-plugin_webdesign-playwright"
     ],
     "deny": [
       "Bash(rm -rf /)",

@@ -353,7 +353,7 @@ export async function acquireStateLock(projectDir: string): Promise<() => void> 
 
 // ── Crash Recovery ──
 
-const STAGE_ORDER: LoopStageType[] = [
+export const STAGE_ORDER: LoopStageType[] = [
   "prerequisites",
   "clarification",
   "clarification_product",

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 # Browser window classes to track
-BROWSER_CLASSES = ("Chromium", "Google-chrome", "chromium", "google-chrome")
+BROWSER_CLASSES = ("Chromium", "Google-chrome", "chromium", "google-chrome", "Electron")
 
 # Process names that indicate a chrome-devtools-mcp-spawned browser
 MCP_PROCESS_INDICATORS = ["chrome-devtools", "playwright", "npx", "node", "npm"]
