@@ -1,7 +1,16 @@
 import { ipcMain, dialog } from "electron";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { parseTasksFile } from "../../core/parser.js";
+
+function expandTilde(p: string): string {
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/") || p.startsWith("~\\")) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
 
 export function registerProjectHandlers(): void {
   ipcMain.handle("project:open", async () => {
@@ -73,6 +82,33 @@ export function registerProjectHandlers(): void {
     }
   );
 
+  ipcMain.handle(
+    "project:open-path",
+    (_event, projectPath: string): { path: string } | { error: string } => {
+      const resolved = expandTilde(projectPath);
+      if (!fs.existsSync(resolved)) {
+        return { error: `Directory does not exist: ${resolved}` };
+      }
+      const stat = fs.statSync(resolved);
+      if (!stat.isDirectory()) {
+        return { error: `Path is not a directory: ${resolved}` };
+      }
+      return { path: resolved };
+    }
+  );
+
+  ipcMain.handle(
+    "project:path-exists",
+    (_event, targetPath: string): boolean => {
+      try {
+        const resolved = expandTilde(targetPath);
+        return fs.existsSync(resolved) && fs.statSync(resolved).isDirectory();
+      } catch {
+        return false;
+      }
+    }
+  );
+
   ipcMain.handle("project:pick-folder", async () => {
     const result = await dialog.showOpenDialog({
       properties: ["openDirectory", "createDirectory"],
@@ -85,7 +121,7 @@ export function registerProjectHandlers(): void {
   ipcMain.handle(
     "project:create-project",
     (_event, parentDir: string, projectName: string): { path: string } | { error: string } => {
-      const projectPath = path.join(parentDir, projectName);
+      const projectPath = path.join(expandTilde(parentDir), projectName);
       if (fs.existsSync(projectPath)) {
         return { error: `Directory already exists: ${projectPath}` };
       }

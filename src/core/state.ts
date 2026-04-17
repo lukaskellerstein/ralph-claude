@@ -282,9 +282,14 @@ export async function detectStaleState(
   if (!state) return "none";
   if (state.status === "completed") return "completed";
 
+  // Paused state is always resumable — the user explicitly asked to continue.
+  // Branch mismatch (e.g., speckit switched to a feature branch during specify)
+  // is expected and shouldn't invalidate the state.
+  if (state.status === "paused") return "fresh";
+
   try {
     const currentBranch = getCurrentBranch(projectDir);
-    if (state.branchName !== currentBranch) return "stale";
+    if (state.branchName && state.branchName !== currentBranch) return "stale";
   } catch {
     return "stale";
   }
@@ -355,11 +360,13 @@ const STAGE_ORDER: LoopStageType[] = [
   "clarification_technical",
   "clarification_synthesis",
   "constitution",
+  "manifest_extraction",
   "gap_analysis",
   "specify",
   "plan",
   "tasks",
   "implement",
+  "implement_fix",
   "verify",
   "learnings",
 ];
@@ -585,6 +592,31 @@ export async function reconcileState(
     if (driftSummary.taskProgressions[specDir]?.length) {
       warnings.push(`Tasks manually checked in ${specDir} — accepting progression`);
     }
+  }
+
+  // Manifest reconciliation: sync FeatureArtifacts with feature-manifest.json
+  try {
+    const manifestPath = path.join(projectDir, ".dex", "feature-manifest.json");
+    if (fs.existsSync(manifestPath)) {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+      if (manifest?.features && Array.isArray(manifest.features)) {
+        for (const entry of manifest.features) {
+          if (entry.status === "active" && entry.specDir && !state.artifacts.features[entry.specDir]) {
+            // Manifest says active but no FeatureArtifacts entry — create one
+            featurePatches[entry.specDir] = { specDir: entry.specDir, status: "specifying", spec: null, plan: null, tasks: null, lastImplementedPhase: 0 };
+            warnings.push(`Manifest reconciliation: created FeatureArtifacts for ${entry.specDir} (manifest says active)`);
+          } else if (entry.status === "completed" && entry.specDir && state.artifacts.features[entry.specDir]) {
+            const fa = state.artifacts.features[entry.specDir];
+            if (fa.status !== "completed") {
+              featurePatches[entry.specDir] = { status: "completed" };
+              warnings.push(`Manifest reconciliation: updated ${entry.specDir} to completed (manifest says completed)`);
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // Manifest reconciliation failure is non-fatal
   }
 
   if (Object.keys(featurePatches).length > 0) {

@@ -111,13 +111,11 @@ Understand → Plan → Implement → Test → Report.
 
 ## Development Workflow
 
-1. The user runs `dev-setup.sh` manually — agents MUST NOT
-   start the dev server.
-2. Process logs are at `/tmp/dex-logs/` (`vite.log`,
+1. Process logs are at `/tmp/dex-logs/` (`vite.log`,
    `electron.log`). Read these when debugging.
-3. MCP server `electron-chrome` on CDP port 9333 is the
+2. MCP server `electron-chrome` on CDP port 9333 is the
    primary verification tool for UI changes.
-4. Communication assumes 20+ years of engineering experience:
+3. Communication assumes 20+ years of engineering experience:
    be direct, technical, focus on "why" over "what", highlight
    tradeoffs.
 

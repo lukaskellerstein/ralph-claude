@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bug, Check, RotateCw, FolderPlus } from "lucide-react";
+import { Bug, Check, RotateCw, FolderOpen } from "lucide-react";
 import type { Phase, Task, RunConfig, SubagentInfo } from "../core/types.js";
 import { AgentStepList } from "./components/agent-trace/AgentStepList.js";
 import { SubagentDetailView } from "./components/agent-trace/SubagentDetailView.js";
@@ -95,11 +95,10 @@ export default function App() {
     [selectedSubagentId, orchestrator.subagents]
   );
   const [, setTick] = useState(0);
-  const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
-  const [newProjectFolder, setNewProjectFolder] = useState<string | null>(null);
-  const [newProjectName, setNewProjectName] = useState("");
-  const [newProjectError, setNewProjectError] = useState<string | null>(null);
-  const newProjectInputRef = useRef<HTMLInputElement>(null);
+  const [welcomePath, setWelcomePath] = useState("~/Projects/Temp");
+  const [welcomeName, setWelcomeName] = useState(() => `project-${Math.random().toString(36).slice(2, 10)}`);
+  const [welcomeError, setWelcomeError] = useState<string | null>(null);
+  const [welcomeTargetExists, setWelcomeTargetExists] = useState(false);
 
   const handleOpenProject = useCallback(async () => {
     const dir = await project.openProject();
@@ -108,6 +107,23 @@ export default function App() {
       setCurrentView(hasHistory ? "loop-dashboard" : "overview");
     }
   }, [project.openProject, orchestrator.loadRunHistory]);
+
+  // Debounced existence check for the welcome form's target path
+  useEffect(() => {
+    if (project.projectDir) return;
+    const path = welcomePath.trim();
+    const name = welcomeName.trim();
+    if (!path || !name) {
+      setWelcomeTargetExists(false);
+      return;
+    }
+    const target = `${path.replace(/\/$/, "")}/${name}`;
+    const id = setTimeout(async () => {
+      const exists = await window.dexAPI.pathExists(target);
+      setWelcomeTargetExists(exists);
+    }, 150);
+    return () => clearTimeout(id);
+  }, [welcomePath, welcomeName, project.projectDir]);
 
   // Tick every second while running so duration updates in realtime
   useEffect(() => {
@@ -201,33 +217,38 @@ export default function App() {
     }
   }, [orchestrator.isRunning, orchestrator.mode]);
 
-  const handleNewProject = useCallback(() => {
-    setNewProjectFolder(null);
-    setNewProjectName("");
-    setNewProjectError(null);
-    setShowNewProjectDialog(true);
-  }, []);
-
   const handlePickFolder = useCallback(async () => {
     const folder = await window.dexAPI.pickFolder();
     if (folder) {
-      setNewProjectFolder(folder);
-      setNewProjectError(null);
-      setTimeout(() => newProjectInputRef.current?.focus(), 50);
+      setWelcomePath(folder);
+      setWelcomeError(null);
     }
   }, []);
 
-  const handleNewProjectSubmit = useCallback(async () => {
-    const name = newProjectName.trim();
-    if (!name || !newProjectFolder) return;
-    const result = await project.createProject(newProjectFolder, name);
-    if ("error" in result) {
-      setNewProjectError(result.error);
+  const handleWelcomeSubmit = useCallback(async () => {
+    const path = welcomePath.trim();
+    const name = welcomeName.trim();
+    if (!path || !name) return;
+    const target = `${path.replace(/\/$/, "")}/${name}`;
+
+    if (welcomeTargetExists) {
+      const result = await project.openProjectPath(target);
+      if ("error" in result) {
+        setWelcomeError(result.error);
+        return;
+      }
+      const hasHistory = await orchestrator.loadRunHistory(result.path);
+      setCurrentView(hasHistory ? "loop-dashboard" : "overview");
       return;
     }
-    setShowNewProjectDialog(false);
+
+    const result = await project.createProject(path, name);
+    if ("error" in result) {
+      setWelcomeError(result.error);
+      return;
+    }
     setCurrentView("loop-start");
-  }, [newProjectName, newProjectFolder, project.createProject]);
+  }, [welcomePath, welcomeName, welcomeTargetExists, project.openProjectPath, project.createProject, orchestrator.loadRunHistory]);
 
   const handleStartLoop = (loopConfig: {
     descriptionFile?: string;
@@ -350,6 +371,8 @@ export default function App() {
   let content;
 
   if (!project.projectDir) {
+    const canSubmit = welcomePath.trim() !== "" && welcomeName.trim() !== "";
+    const combinedPath = `${welcomePath.trim().replace(/\/$/, "")}/${welcomeName.trim()}`;
     content = (
       <div
         style={{
@@ -363,43 +386,104 @@ export default function App() {
         }}
       >
         <span style={{ fontSize: "0.88rem" }}>Create a new project or open an existing one</span>
-        <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, width: 440 }}>
+          <div>
+            <label style={{ fontSize: "0.78rem", color: "var(--foreground-dim)", display: "block", marginBottom: 6 }}>
+              Location
+            </label>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                data-testid="welcome-path"
+                type="text"
+                value={welcomePath}
+                onChange={(e) => { setWelcomePath(e.target.value); setWelcomeError(null); }}
+                placeholder="~/Projects/Temp"
+                style={{
+                  flex: 1,
+                  padding: "8px 10px",
+                  borderRadius: "var(--radius)",
+                  border: "1px solid var(--border)",
+                  background: "var(--surface-elevated)",
+                  color: "var(--foreground)",
+                  fontSize: "0.84rem",
+                  fontFamily: "var(--font-mono)",
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+              <button
+                data-testid="welcome-pick-folder"
+                onClick={handlePickFolder}
+                title="Pick folder"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 36,
+                  padding: 0,
+                  borderRadius: "var(--radius)",
+                  border: "1px solid var(--border)",
+                  background: "var(--surface-elevated)",
+                  color: "var(--foreground-muted)",
+                  cursor: "pointer",
+                }}
+              >
+                <FolderOpen size={14} />
+              </button>
+            </div>
+          </div>
+          <div>
+            <label style={{ fontSize: "0.78rem", color: "var(--foreground-dim)", display: "block", marginBottom: 6 }}>
+              Project name
+            </label>
+            <input
+              data-testid="welcome-name"
+              type="text"
+              value={welcomeName}
+              onChange={(e) => { setWelcomeName(e.target.value); setWelcomeError(null); }}
+              onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) handleWelcomeSubmit(); }}
+              placeholder="my-awesome-project"
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                borderRadius: "var(--radius)",
+                border: `1px solid ${welcomeError ? "var(--status-error)" : "var(--border)"}`,
+                background: "var(--surface-elevated)",
+                color: "var(--foreground)",
+                fontSize: "0.84rem",
+                fontFamily: "var(--font-mono)",
+                outline: "none",
+                boxSizing: "border-box",
+              }}
+            />
+          </div>
+          {canSubmit && (
+            <div style={{ fontSize: "0.72rem", color: "var(--foreground-dim)", fontFamily: "var(--font-mono)" }}>
+              {combinedPath}
+            </div>
+          )}
+          {welcomeError && (
+            <div style={{ fontSize: "0.76rem", color: "var(--status-error)" }}>
+              {welcomeError}
+            </div>
+          )}
           <button
-            onClick={handleNewProject}
+            data-testid="welcome-submit"
+            onClick={handleWelcomeSubmit}
+            disabled={!canSubmit}
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
+              marginTop: 4,
               padding: "8px 16px",
-              background: "var(--primary)",
-              color: "#fff",
+              background: canSubmit ? "var(--primary)" : "var(--surface-elevated)",
+              color: canSubmit ? "#fff" : "var(--foreground-disabled)",
               borderRadius: "var(--radius)",
               fontWeight: 500,
               fontSize: "0.84rem",
-              cursor: "pointer",
+              cursor: canSubmit ? "pointer" : "not-allowed",
               border: "none",
             }}
           >
-            <FolderPlus size={14} />
-            New Project
-          </button>
-          <button
-            onClick={handleOpenProject}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "8px 16px",
-              background: "var(--surface-elevated)",
-              color: "var(--foreground-muted)",
-              borderRadius: "var(--radius)",
-              fontWeight: 500,
-              fontSize: "0.84rem",
-              cursor: "pointer",
-              border: "1px solid var(--border)",
-            }}
-          >
-            Open Existing
+            {welcomeTargetExists ? "Open Existing" : "New"}
           </button>
         </div>
       </div>
@@ -441,40 +525,63 @@ export default function App() {
             fontSize: "0.82rem",
           }}
         >
-          {orchestrator.mode === "loop" && (
-            <>
-              <span
-                onClick={() => setCurrentView("loop-dashboard")}
-                style={{
-                  color: "var(--foreground-muted)",
-                  cursor: "pointer",
-                  transition: "color 0.15s",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--primary)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--foreground-muted)"; }}
-              >
-                Loop
-              </span>
-              <span style={{ color: "var(--foreground-dim)" }}>/</span>
-              {orchestrator.currentCycle != null && (
-                <>
-                  <span
-                    onClick={() => setCurrentView("loop-dashboard")}
-                    style={{
-                      color: "var(--foreground-muted)",
-                      cursor: "pointer",
-                      transition: "color 0.15s",
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.color = "var(--primary)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.color = "var(--foreground-muted)"; }}
-                  >
-                    Cycle {orchestrator.currentCycle}
-                  </span>
-                  <span style={{ color: "var(--foreground-dim)" }}>/</span>
-                </>
-              )}
-            </>
-          )}
+          {orchestrator.mode === "loop" && (() => {
+            // Resolve the spec name for the middle crumb from: selected spec →
+            // current cycle → last cycle with a specDir. Survives pause, which
+            // clears currentCycle via run_completed.
+            const currentCycleObj = orchestrator.currentCycle != null
+              ? orchestrator.loopCycles.find(c => c.cycleNumber === orchestrator.currentCycle)
+              : null;
+            const stripSpecs = (s: string) => s.replace(/^specs\//, "");
+            const fallbackCycle = [...orchestrator.loopCycles]
+              .reverse()
+              .find(c => !!c.specDir);
+            const specName = project.selectedSpec
+              ?? (currentCycleObj?.specDir ? stripSpecs(currentCycleObj.specDir) : null)
+              ?? (fallbackCycle?.specDir ? stripSpecs(fallbackCycle.specDir) : null);
+            const cycleNumber = orchestrator.currentCycle ?? fallbackCycle?.cycleNumber ?? null;
+            const midLabel = cycleNumber != null ? `Cycle ${cycleNumber}` : specName;
+            return (
+              <>
+                <span
+                  onClick={() => setCurrentView("loop-dashboard")}
+                  style={{
+                    color: "var(--foreground-muted)",
+                    cursor: "pointer",
+                    transition: "color 0.15s",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--primary)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = "var(--foreground-muted)"; }}
+                >
+                  Loop
+                </span>
+                <span style={{ color: "var(--foreground-dim)" }}>/</span>
+                {midLabel && (
+                  <>
+                    <span
+                      onClick={() => {
+                        if (specName) {
+                          handleSelectSpec(specName);
+                        } else {
+                          setCurrentView("loop-dashboard");
+                        }
+                      }}
+                      style={{
+                        color: "var(--foreground-muted)",
+                        cursor: "pointer",
+                        transition: "color 0.15s",
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.color = "var(--primary)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.color = "var(--foreground-muted)"; }}
+                    >
+                      {midLabel}
+                    </span>
+                    <span style={{ color: "var(--foreground-dim)" }}>/</span>
+                  </>
+                )}
+              </>
+            );
+          })()}
           {orchestrator.mode !== "loop" && project.selectedSpec && (
             <>
               <span
@@ -678,139 +785,6 @@ export default function App() {
           questions={orchestrator.pendingQuestion.questions}
           onAnswer={orchestrator.answerQuestion}
         />
-      )}
-      {showNewProjectDialog && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 2000,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "rgba(0,0,0,0.5)",
-          }}
-          onClick={() => setShowNewProjectDialog(false)}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: "var(--surface)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              padding: "24px 28px",
-              width: 440,
-              boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
-            }}
-          >
-            <div style={{ fontSize: "0.92rem", fontWeight: 600, color: "var(--foreground)", marginBottom: 20 }}>
-              New Project
-            </div>
-
-            {/* Step 1: Pick folder */}
-            <label style={{ fontSize: "0.78rem", color: "var(--foreground-dim)", display: "block", marginBottom: 6 }}>
-              Location
-            </label>
-            <button
-              onClick={handlePickFolder}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                width: "100%",
-                padding: "8px 10px",
-                borderRadius: "var(--radius)",
-                border: "1px solid var(--border)",
-                background: "var(--surface-elevated)",
-                color: newProjectFolder ? "var(--foreground)" : "var(--foreground-dim)",
-                fontSize: "0.84rem",
-                fontFamily: "inherit",
-                cursor: "pointer",
-                textAlign: "left",
-                boxSizing: "border-box",
-                transition: "border-color 0.15s",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--primary)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
-            >
-              <FolderPlus size={14} style={{ flexShrink: 0, color: "var(--primary)" }} />
-              {newProjectFolder ?? "Select folder..."}
-            </button>
-
-            {/* Step 2: Project name (shown after folder is selected) */}
-            {newProjectFolder && (
-              <div style={{ marginTop: 14 }}>
-                <label style={{ fontSize: "0.78rem", color: "var(--foreground-dim)", display: "block", marginBottom: 6 }}>
-                  Project name
-                </label>
-                <input
-                  ref={newProjectInputRef}
-                  type="text"
-                  value={newProjectName}
-                  onChange={(e) => { setNewProjectName(e.target.value); setNewProjectError(null); }}
-                  onKeyDown={(e) => { if (e.key === "Enter") handleNewProjectSubmit(); if (e.key === "Escape") setShowNewProjectDialog(false); }}
-                  placeholder="my-awesome-project"
-                  style={{
-                    width: "100%",
-                    padding: "8px 10px",
-                    borderRadius: "var(--radius)",
-                    border: `1px solid ${newProjectError ? "var(--status-error)" : "var(--border)"}`,
-                    background: "var(--surface-elevated)",
-                    color: "var(--foreground)",
-                    fontSize: "0.84rem",
-                    fontFamily: "inherit",
-                    outline: "none",
-                    boxSizing: "border-box",
-                  }}
-                />
-                {newProjectName.trim() && (
-                  <div style={{ fontSize: "0.72rem", color: "var(--foreground-dim)", marginTop: 6, fontFamily: "var(--font-mono)" }}>
-                    {newProjectFolder}/{newProjectName.trim()}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {newProjectError && (
-              <div style={{ fontSize: "0.76rem", color: "var(--status-error)", marginTop: 8 }}>
-                {newProjectError}
-              </div>
-            )}
-
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
-              <button
-                onClick={() => setShowNewProjectDialog(false)}
-                style={{
-                  padding: "6px 14px",
-                  borderRadius: "var(--radius)",
-                  fontSize: "0.82rem",
-                  background: "var(--surface-elevated)",
-                  color: "var(--foreground-muted)",
-                  border: "1px solid var(--border)",
-                  cursor: "pointer",
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleNewProjectSubmit}
-                disabled={!newProjectFolder || !newProjectName.trim()}
-                style={{
-                  padding: "6px 14px",
-                  borderRadius: "var(--radius)",
-                  fontSize: "0.82rem",
-                  fontWeight: 600,
-                  background: newProjectFolder && newProjectName.trim() ? "var(--primary)" : "var(--surface-elevated)",
-                  color: newProjectFolder && newProjectName.trim() ? "#fff" : "var(--foreground-disabled)",
-                  border: "none",
-                  cursor: newProjectFolder && newProjectName.trim() ? "pointer" : "not-allowed",
-                }}
-              >
-                Create
-              </button>
-            </div>
-          </div>
-        </div>
       )}
     </>
   );

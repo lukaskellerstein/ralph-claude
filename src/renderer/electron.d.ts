@@ -18,6 +18,8 @@ interface DexAPI {
   writeFile(filePath: string, content: string): Promise<boolean>;
   pickFolder(): Promise<string | null>;
   createProject(parentDir: string, name: string): Promise<{ path: string } | { error: string }>;
+  openProjectPath(projectPath: string): Promise<{ path: string } | { error: string }>;
+  pathExists(targetPath: string): Promise<boolean>;
 
   // Orchestrator
   getProjectState(dir: string): Promise<DexState | null>;

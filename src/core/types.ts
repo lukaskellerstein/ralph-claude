@@ -75,11 +75,13 @@ export type LoopStageType =
   | "clarification_technical"
   | "clarification_synthesis"
   | "constitution"
+  | "manifest_extraction"
   | "gap_analysis"
   | "specify"
   | "plan"
   | "tasks"
   | "implement"
+  | "implement_fix"
   | "verify"
   | "learnings";
 
@@ -95,7 +97,7 @@ export interface LoopStage {
 }
 
 export type GapAnalysisDecision =
-  | { type: "NEXT_FEATURE"; name: string; description: string }
+  | { type: "NEXT_FEATURE"; name: string; description: string; featureId: number }
   | { type: "RESUME_FEATURE"; specDir: string }
   | { type: "REPLAN_FEATURE"; specDir: string }
   | { type: "GAPS_COMPLETE" };
@@ -182,6 +184,10 @@ export interface RunConfig {
 
   // Resume: set to true to resume from .dex/state.json
   resume?: boolean;
+
+  // Structured outputs configuration
+  maxVerifyRetries?: number;       // default: 1 — fix-reverify attempts per cycle
+  maxLearningsPerCategory?: number; // default: 20 — cap per category in learnings.md
 }
 
 // ── Events: Orchestrator → UI ──
@@ -248,6 +254,10 @@ export type OrchestratorEvent =
       stopped?: boolean;
     }
   | { type: "loop_terminated"; runId: string; termination: LoopTermination }
+  // Manifest & structured output events
+  | { type: "manifest_created"; runId: string; featureCount: number }
+  | { type: "manifest_drift_detected"; runId: string }
+  | { type: "verify_failed"; runId: string; cycleNumber: number; blockingCount: number; summary: string }
   // User input request/response (AskUserQuestion)
   | { type: "user_input_request"; runId: string; requestId: string; questions: UserInputQuestion[] }
   | { type: "user_input_response"; requestId: string; answers: Record<string, string> }
