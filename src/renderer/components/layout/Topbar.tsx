@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { RefreshCw, Play, Square, FolderOpen } from "lucide-react";
 import type { RunConfig } from "../../../core/types.js";
+import { RecBadge } from "../checkpoints/RecBadge.js";
 
 interface AggregateStats {
   totalSpecs: number;
@@ -36,6 +38,23 @@ export function Topbar({
   onStop,
 }: TopbarProps) {
   const canStart = !!projectDir && (aggregate.unfinishedSpecs > 0 || isPausedLoop) && !isRunning;
+
+  // Poll record-mode flag from project state so the badge updates after toggle.
+  const [recordMode, setRecordMode] = useState(false);
+  useEffect(() => {
+    if (!projectDir) {
+      setRecordMode(false);
+      return;
+    }
+    const load = () =>
+      window.dexAPI
+        .getProjectState(projectDir)
+        .then((s) => setRecordMode(Boolean(s?.ui?.recordMode)))
+        .catch(() => setRecordMode(false));
+    load();
+    const t = window.setInterval(load, 3000);
+    return () => window.clearInterval(t);
+  }, [projectDir]);
 
   return (
     <div
@@ -169,6 +188,9 @@ export function Topbar({
 
       {/* Spacer */}
       <div style={{ flex: 1 }} />
+
+      {/* REC badge (008 — Record mode) */}
+      <RecBadge recordMode={recordMode} />
 
       {/* Aggregate Stats */}
       {projectDir && aggregate.totalSpecs > 0 && (

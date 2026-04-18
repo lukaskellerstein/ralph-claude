@@ -32,9 +32,9 @@ npm test && npm run lint
 TypeScript (strict mode), Node.js (Electron 30+): Follow standard conventions
 
 ## Recent Changes
+- 008-interactive-checkpoint: Added TypeScript 5.6+ (strict mode), Node.js bundled with Electron 41 (Node 20 runtime).
 - 007-sqlite-removal: Added TypeScript 5.6+ (strict mode), Node.js bundled with Electron 41 (Node 20 runtime) + Unchanged — `@anthropic-ai/claude-agent-sdk` ^0.1.45, `electron` ^41.2.1, `react` ^18.3.1, `gsap` ^3.12.5, `lucide-react` ^0.460.0. **Removed** — `better-sqlite3` ^12.9.0 + `@types/better-sqlite3` ^7.6.13. Implementation uses only `node:fs`, `node:path`, `node:os`, `node:crypto`.
 - 006-mid-cycle-resume: Added TypeScript 5.6+ (strict mode). + Unchanged — `@anthropic-ai/claude-agent-sdk` ^0.1.45, `better-sqlite3` ^12.9.0, `electron` ^41.2.1, `react` ^18.3.1. No additions.
-- 005-testing-improvements: Added Bash (POSIX + git + jq), no TypeScript. Existing project is TypeScript 5.6+ strict but this feature adds zero TS. + `bash`, `git`, `jq`. No npm dependency added. Implicitly depends on the orchestrator's existing state-reconciliation code paths (`src/core/state.ts:435-654` `reconcileState`, `src/core/state.ts:290-295` `detectStaleState`, `src/core/orchestrator.ts:1850-1945` resume entry, `src/renderer/App.tsx:297-304` / `src/renderer/components/Topbar.tsx:250` UI resume detection) as stable unchanged contracts.
 
 
 <!-- MANUAL ADDITIONS START -->
@@ -56,14 +56,22 @@ Per-project (inside each opened project):
 
 ```text
 <projectDir>/.dex/
-├── state.json               committed
+├── state.json               gitignored (008 — runtime cache, local only)
 ├── state.lock               gitignored (PID)
 ├── feature-manifest.json    committed
 ├── learnings.md             committed
+├── variant-groups/          gitignored — one <groupId>.json per in-flight Try N ways
+├── worktrees/               gitignored — parallel-variant worktrees for spec-only stages
 └── runs/                    committed by default — one <runId>.json per run
     └── <runId>.json         full audit summary (RunRecord)
 ```
 
-All files in `<projectDir>/.dex/` are committable except `state.lock`. Teams who want private traces add `.dex/runs/` to `.gitignore` themselves. Diagnostics paths are documented in full in `.claude/rules/06-testing.md` section 4f.
+History layer (committed to git, shared via push):
+
+- `checkpoint/<name>` tags — named save points (one per completed stage)
+- `attempt-<ts>[-<letter>]` branches — Go back / Try again / variant scratch branches (auto-pruned after 30 days)
+- `capture/<date>-<slice>` branches — Record-mode canonical anchors
+
+All files in `<projectDir>/.dex/` are committable except those marked `gitignored`. Teams who want private traces add `.dex/runs/` to `.gitignore` themselves. Diagnostics paths are documented in full in `.claude/rules/06-testing.md` section 4f.
 
 <!-- MANUAL ADDITIONS END -->

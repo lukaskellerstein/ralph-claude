@@ -12,6 +12,7 @@ import { LoopDashboard } from "./components/loop/LoopDashboard.js";
 import { ClarificationPanel } from "./components/loop/ClarificationPanel.js";
 import { useOrchestrator } from "./hooks/useOrchestrator.js";
 import { useProject } from "./hooks/useProject.js";
+import { CheckpointsEnvelope } from "./components/checkpoints/CheckpointsEnvelope.js";
 
 interface DebugContext {
   runId: string | null;
@@ -25,6 +26,10 @@ interface DebugContext {
   view: string;
   isRunning: boolean;
   viewingHistorical: boolean;
+  // 008 checkpoint fields
+  currentAttemptBranch: string | null;
+  lastCheckpointTag: string | null;
+  candidateSha: string | null;
 }
 
 function buildDebugPayload(ctx: DebugContext): string {
@@ -43,6 +48,9 @@ function buildDebugPayload(ctx: DebugContext): string {
   add("View:", ctx.view);
   add("IsRunning:", ctx.isRunning);
   add("ViewHistory:", ctx.viewingHistorical);
+  add("CurrentAttemptBranch:", ctx.currentAttemptBranch);
+  add("LastCheckpointTag:", ctx.lastCheckpointTag);
+  add("CandidateSha:", ctx.candidateSha);
   add("Timestamp:", new Date().toISOString());
   return lines.join("\n");
 }
@@ -351,6 +359,36 @@ export default function App() {
     [project.projectDir, project.selectedSpec, orchestrator.loadPhaseTrace, orchestrator.switchToLive, orchestrator.isRunning, orchestrator.currentPhase, orchestrator.currentRunId]
   );
 
+  // 008 checkpoint tracking for DEBUG badge
+  const [checkpointDebug, setCheckpointDebug] = useState<{
+    currentAttemptBranch: string | null;
+    lastCheckpointTag: string | null;
+    candidateSha: string | null;
+  }>({ currentAttemptBranch: null, lastCheckpointTag: null, candidateSha: null });
+  useEffect(() => {
+    const off = window.dexAPI.onOrchestratorEvent((raw) => {
+      const e = raw as unknown as {
+        type?: string;
+        checkpointTag?: string;
+        candidateSha?: string;
+        attemptBranch?: string;
+      };
+      if (e.type === "stage_candidate") {
+        setCheckpointDebug((prev) => ({
+          currentAttemptBranch: e.attemptBranch ?? prev.currentAttemptBranch,
+          lastCheckpointTag: e.checkpointTag ?? prev.lastCheckpointTag,
+          candidateSha: e.candidateSha ?? prev.candidateSha,
+        }));
+      } else if (e.type === "checkpoint_promoted") {
+        setCheckpointDebug((prev) => ({
+          ...prev,
+          lastCheckpointTag: e.checkpointTag ?? prev.lastCheckpointTag,
+        }));
+      }
+    });
+    return off;
+  }, []);
+
   const debugContext = useMemo<DebugContext>(() => ({
     runId: orchestrator.currentRunId,
     phaseTraceId: orchestrator.currentPhaseTraceId,
@@ -365,11 +403,15 @@ export default function App() {
     view: currentView,
     isRunning: orchestrator.isRunning,
     viewingHistorical: orchestrator.viewingHistorical,
+    currentAttemptBranch: checkpointDebug.currentAttemptBranch,
+    lastCheckpointTag: checkpointDebug.lastCheckpointTag,
+    candidateSha: checkpointDebug.candidateSha,
   }), [
     orchestrator.currentRunId, orchestrator.currentPhaseTraceId, orchestrator.mode,
     orchestrator.currentCycle, orchestrator.currentStage, orchestrator.activeSpecDir,
     orchestrator.currentPhase, project.projectDir, currentView,
     orchestrator.isRunning, orchestrator.viewingHistorical,
+    checkpointDebug.currentAttemptBranch, checkpointDebug.lastCheckpointTag, checkpointDebug.candidateSha,
   ]);
 
   let content;
@@ -687,6 +729,7 @@ export default function App() {
         onImplPhaseClick={handleImplPhaseClick}
         onSelectSpec={handleSelectSpec}
         debugBadge={<DebugCopyBadge context={debugContext} />}
+        projectDir={project.projectDir}
       />
     );
   } else if (currentView === "loop-start") {
@@ -790,6 +833,7 @@ export default function App() {
           onAnswer={orchestrator.answerQuestion}
         />
       )}
+      <CheckpointsEnvelope projectDir={project.projectDir ?? null} />
     </>
   );
 }

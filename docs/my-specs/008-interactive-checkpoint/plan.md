@@ -648,22 +648,23 @@ Hooks: `App.tsx` at project-open time calls `checkpoints:checkIsRepo` and `check
 
 ---
 
-## S8 — Timeline panel with `@gitgraph/react`
+## S8 — Timeline panel with custom D3/SVG renderer
 
-Git-flow visualization is the v1. No stopgap; `@gitgraph/react` adapter is ~100 LOC.
+Git-flow visualization is the v1. Custom D3 + React-owned SVG adapter, **vertical** orientation, **curved** (elbow) edges. No external git-graph library — `@gitgraph/react` is archived, and React Flow's Pro-upgrade gravity is a long-term risk for a pillar feature.
 
-**Library verification** — the implementer checks:
-```bash
-npm view @gitgraph/react
-```
-If last-publish > 18 months and GitHub issues show no maintainer response for recent PRs, fall back to `mermaid` gitGraph or a custom D3/SVG renderer. The data layer (`listTimeline`) is library-agnostic.
+**Dependencies added** — `d3-zoom`, `d3-selection`, `d3-shape` (~12 kB gz total). No full `d3` mega-bundle.
+
+**Architecture** — React renders the SVG tree; d3 handles pan/zoom gesture and edge path math. Layout is a pure function, unit-testable without a DOM.
 
 **Files**:
 
 ```
 src/renderer/components/checkpoints/
 ├── TimelinePanel.tsx         container — TimelineGraph + NodeDetailPanel + PastAttemptsList
-├── TimelineGraph.tsx         @gitgraph/react adapter (or fallback)
+├── TimelineGraph.tsx         React SVG + d3-zoom wrapper
+├── timelineLayout.ts         pure layout fn: TimelineSnapshot → nodes/edges with x,y
+├── NodeCircle.tsx            single commit/checkpoint/attempt node
+├── EdgePath.tsx              curved SVG path between two nodes (via d3-shape.linkVertical)
 ├── NodeDetailPanel.tsx       right-side panel: stage summary + action buttons
 ├── PastAttemptsList.tsx      collapsible searchable list below the graph
 ├── RecBadge.tsx              topbar REC indicator
@@ -676,42 +677,107 @@ src/renderer/components/checkpoints/
     └── useDirtyCheck.ts
 ```
 
-`TimelineGraph` adapter sketch:
+**Unified node type** — parent components don't distinguish kinds; the layout does.
+
+```ts
+export type TimelineNode =
+  | { kind: "checkpoint"; data: CheckpointInfo }
+  | { kind: "attempt";    data: AttemptInfo }
+  | { kind: "pending";    data: PendingCandidate };
+
+export interface LaidOutNode {
+  id: string;                              // tag (checkpoint) | branch (attempt/pending)
+  node: TimelineNode;
+  x: number;                               // lane column (canonical = 0, attempts = 1..N)
+  y: number;                               // row (by commit order on its lane)
+  lane: "canonical" | "attempt" | "variant";
+  laneColor: string;                       // from design tokens
+}
+
+export interface LaidOutEdge {
+  fromId: string;
+  toId: string;
+  kind: "canonical" | "branch-off" | "merge-back";
+}
+```
+
+**Layout (pure fn)**:
+
+```ts
+// src/renderer/components/checkpoints/timelineLayout.ts
+export function layoutTimeline(
+  snapshot: TimelineSnapshot,
+  opts: { columnWidth: number; rowHeight: number }
+): { nodes: LaidOutNode[]; edges: LaidOutEdge[]; width: number; height: number };
+```
+
+Deterministic lane assignment: canonical = column 0, each attempt gets the next free column, variant groups occupy adjacent columns. `y` increases with commit order along each lane. Snapshot-tested.
+
+**`TimelineGraph` adapter sketch**:
 
 ```tsx
-import { Gitgraph, templateExtend, TemplateName } from "@gitgraph/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { select as d3Select } from "d3-selection";
+import { zoom as d3Zoom, zoomIdentity, type ZoomTransform } from "d3-zoom";
+import { linkVertical } from "d3-shape";
+import { layoutTimeline } from "./timelineLayout";
 
-export function TimelineGraph({ snapshot, onNodeClick }: Props) {
-  const template = templateExtend(TemplateName.Metro, {
-    colors: ["#89b4fa", "#cba6f7", "#a6e3a1"], // canonical, attempts, variants
-    commit: { spacing: 60, dot: { size: 12 } },
-    branch: { spacing: 40 },
-  });
+interface Props {
+  snapshot: TimelineSnapshot;
+  selectedNodeId: string | null;
+  onNodeClick: (node: TimelineNode) => void;
+  onNodeHover?: (node: TimelineNode | null) => void;
+}
+
+export function TimelineGraph({ snapshot, selectedNodeId, onNodeClick, onNodeHover }: Props) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const { nodes, edges, width, height } = useMemo(
+    () => layoutTimeline(snapshot, { columnWidth: 56, rowHeight: 64 }),
+    [snapshot]
+  );
+  const [transform, setTransform] = useState<ZoomTransform>(zoomIdentity);
+
+  useEffect(() => {
+    const zoom = d3Zoom<SVGSVGElement, unknown>()
+      .scaleExtent([0.25, 4])
+      .on("zoom", (e) => setTransform(e.transform));
+    d3Select(svgRef.current!).call(zoom);
+  }, []);
+
+  const linkPath = linkVertical<LaidOutEdge, { x: number; y: number }>()
+    .source((e) => nodes.find(n => n.id === e.fromId)!)
+    .target((e) => nodes.find(n => n.id === e.toId)!)
+    .x(p => p.x)
+    .y(p => p.y);
 
   return (
-    <Gitgraph options={{ template, orientation: "horizontal" }}>
-      {(gitgraph) => {
-        const canonical = gitgraph.branch({ name: "canonical" });
-        for (const cp of snapshot.checkpoints) {
-          canonical.commit({
-            subject: cp.label,
-            // alternating cycle shade
-            style: { dot: { color: cp.cycleNumber % 2 ? "#89b4fa" : "#74c7ec" } },
-            onClick: () => onNodeClick({ type: "checkpoint", ref: cp.tag }),
-          }).tag(cp.tag.replace("checkpoint/", ""));
-        }
-        for (const attempt of snapshot.attempts) {
-          const branch = canonical.branch({ name: attempt.branch });
-          branch.commit({
-            subject: `${attempt.branch} (+${attempt.stepsAhead})`,
-            onClick: () => onNodeClick({ type: "attempt", ref: attempt.branch }),
-          });
-        }
-      }}
-    </Gitgraph>
+    <svg ref={svgRef} width="100%" height={height} role="img" aria-label="Checkpoint timeline">
+      <g transform={transform.toString()}>
+        {edges.map(e => (
+          <path
+            key={`${e.fromId}-${e.toId}`}
+            d={linkPath(e) ?? ""}
+            className={`timeline-edge timeline-edge--${e.kind}`}
+            fill="none"
+          />
+        ))}
+        {nodes.map(n => (
+          <NodeCircle
+            key={n.id}
+            node={n}
+            selected={n.id === selectedNodeId}
+            onClick={() => onNodeClick(n.node)}
+            onHoverIn={() => onNodeHover?.(n.node)}
+            onHoverOut={() => onNodeHover?.(null)}
+          />
+        ))}
+      </g>
+    </svg>
   );
 }
 ```
+
+Auto-focus (scroll newest node into view) is done by reading the newest `LaidOutNode`'s `y` after each snapshot update and programmatically setting `transform` via `d3Zoom.translateTo` — no manual scroll math.
 
 Integration points:
 - `LoopDashboard.tsx` mounts `TimelinePanel`. Adds Pause-after-stage toggle + Record toggle.
@@ -877,7 +943,7 @@ Each slice independently shippable.
 | **S5** | Checkpoint IPC handlers | API ready |
 | **S6** | Lock extension across checkpoint IPC + read-only probe for second window | Safety |
 | **S7** | First-run modals (InitRepo, Identity, GoBackConfirm) | First-run UX |
-| **S8** | `TimelinePanel` with `@gitgraph/react` + `NodeDetailPanel` + `PastAttemptsList` + `RecBadge` + Record toggle | Primary UX |
+| **S8** | `TimelinePanel` with custom D3/SVG renderer + `NodeDetailPanel` + `PastAttemptsList` + `RecBadge` + Record toggle | Primary UX |
 | **S9** | `CandidatePrompt` + Step button + Pause-after-stage toggle + `StageSummary` per-stage renderers | Per-stage flow |
 | **S10** | Variants: `runVariants` orchestrator mode, worktree parallelism for spec stages, `VariantCompareModal`, resume-mid-variant | Headline |
 | **S11** | `AttemptCompareModal` (stage-aware diff reused from S5) | A/B |
@@ -936,9 +1002,11 @@ S0–S3 ship without visible UI. S4–S7 prepare foundation. S8 delivers the gra
 - Unset `user.email` → `IdentityPrompt` with OS defaults.
 - Dirty file in attempt → Go back shows `GoBackConfirm`.
 
-### S8 gitgraph timeline
+### S8 D3 timeline
 
-- Horizontal graph with canonical / attempt / variant lanes in distinct colors.
+- Vertical graph with canonical / attempt / variant lanes in distinct colors; curved elbow edges between parent and child.
+- `layoutTimeline()` is snapshot-tested against fixture `TimelineSnapshot`s (including multi-variant fan-out).
+- Pan/zoom: wheel to zoom, drag to pan, scale clamped to `[0.25, 4]`.
 - Click node → `NodeDetailPanel` opens with summary + actions.
 - Alternating cycle shades visible at cycle boundaries.
 - REC toggle shows badge in topbar.
@@ -988,11 +1056,10 @@ S0–S3 ship without visible UI. S4–S7 prepare foundation. S8 delivers the gra
 
 ## Open questions for implementer
 
-- **`@gitgraph/react` maintenance**: verify before committing. If stale, `mermaid` gitGraph is the recommended fallback.
 - **Variant stage scope v2**: v1 fans out one stage. Multi-stage fan-out needs UX (when does the group close?).
 - **Attempt retention**: 30-day prune threshold is a guess. Instrument attempt counts; revisit after first month.
 - **Record-mode mid-run toggle**: enabling mid-run promotes from here forward, not retroactively. Document.
-- **Graph performance at scale**: `@gitgraph/react` handles ~200 nodes smoothly. If users accumulate 50+ attempts, default-collapse older ones in the graph.
+- **Graph performance at scale**: React SVG with ~200 nodes is fine; at 500+ nodes (many attempts accumulated), profile and, if needed, virtualize off-screen nodes or default-collapse older attempts in the graph. Layout is already a pure fn, so virtualization is cheap to add.
 - **Reconciliation when state.json diverges from refs**: `reconcileState` needs an authoritative mode that fully rebuilds state.json from refs + filesystem. Details TBD in implementation.
 
 ---
@@ -1003,7 +1070,7 @@ S0–S3 ship without visible UI. S4–S7 prepare foundation. S8 delivers the gra
 
 This is larger than prior estimates to account for:
 - Two subtle subsystems — worktree-based parallel variants, and resume-mid-variant coordination.
-- Graph library evaluation + possible fallback implementation.
+- Custom D3/SVG timeline renderer with pure-fn layout + snapshot tests.
 - Stage-aware diff infrastructure touching every variant comparison.
 - Full first-run UX (identity, init-repo, dirty-tree modals).
 - 10 explicit abstraction-leak scenarios, each verified.
@@ -1016,11 +1083,11 @@ Rough daily breakdown:
 - Day 5: S3 orchestrator events + runs JSON wiring.
 - Day 6: S4 step mode + S5 IPC handlers.
 - Day 7: S6 locking + S7 first-run modals.
-- Days 8–10: S8 gitgraph timeline + `NodeDetailPanel` + `PastAttemptsList` + `RecBadge`.
-- Day 11: S9 candidate prompt + stage summaries.
-- Days 12–15: S10 variants (worktree parallelism, compare modal, resume-mid-variant).
-- Day 16: S11 manual compare.
-- Day 17: S12 docs + GitHub Action.
-- Days 18–20: verification matrix, buffer, polish.
+- Days 8–11: S8 D3/SVG timeline (layout fn + renderer + zoom) + `NodeDetailPanel` + `PastAttemptsList` + `RecBadge`.
+- Day 12: S9 candidate prompt + stage summaries.
+- Days 13–16: S10 variants (worktree parallelism, compare modal, resume-mid-variant).
+- Day 17: S11 manual compare.
+- Day 18: S12 docs + GitHub Action.
+- Days 19–20: verification matrix, buffer, polish.
 
-No new npm deps beyond `@gitgraph/react` (or `mermaid` fallback). Removes `better-sqlite3` (from 007).
+New npm deps: `d3-zoom`, `d3-selection`, `d3-shape` (~12 kB gz). Removes `better-sqlite3` (from 007).

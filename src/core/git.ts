@@ -29,6 +29,8 @@ export function getCommittedFileContent(projectDir: string, ref: string, filePat
   }
 }
 
+export const CHECKPOINT_MESSAGE_PREFIX = "[checkpoint:";
+
 export function commitCheckpoint(
   projectDir: string,
   stage: string,
@@ -36,26 +38,39 @@ export function commitCheckpoint(
   featureName: string | null,
   cost: number
 ): string {
-  const featurePart = featureName ? ` [feature:${featureName}]` : "";
-  const costPart = cost > 0 ? ` [cost:$${cost.toFixed(2)}]` : "";
-  const message = `dex: ${stage} completed [cycle:${cycleNumber}]${featurePart}${costPart}`;
+  // Two-line structured message per 008 contract. Line 2 is machine-parseable.
+  const featureSlug = featureName ?? "-";
+  const costStr = cost.toFixed(2);
+  const message =
+    `dex: ${stage} completed [cycle:${cycleNumber}] [feature:${featureSlug}] [cost:$${costStr}]\n` +
+    `[checkpoint:${stage}:${cycleNumber}]`;
 
-  // Runtime guard: warn if agent's last commit contains .dex/state.json
+  // Stage tracked Dex files only. state.json is gitignored (008 P3); committing
+  // it would resurrect the old tree-rewrite-at-promote problem. feature-manifest.json
+  // stays tracked because teams rely on it for feature inventory.
   try {
-    const lastCommitFiles = exec("git diff-tree --no-commit-id --name-only -r HEAD", projectDir);
-    if (lastCommitFiles.includes(".dex/state.json")) {
-      console.warn("[dex] WARNING: Agent committed .dex/state.json — checkpoint may be stale");
-    }
+    exec('git add .dex/feature-manifest.json', projectDir);
   } catch {
-    // Ignore — might be the first commit
+    // File may not exist yet (pre-manifest-extraction stages). That's fine.
+  }
+  try {
+    exec('git add .dex/learnings.md', projectDir);
+  } catch {
+    // May not exist yet. That's fine.
   }
 
-  exec('git add .dex/state.json .dex/feature-manifest.json', projectDir);
-  try {
-    exec(`git commit -m "${message}"`, projectDir);
-  } catch {
-    // Nothing to commit (state unchanged) — that's fine
-  }
+  // --allow-empty ensures every stage gets its own distinct SHA, even when the
+  // stage produced no file changes (e.g., verify). Without this, adjacent
+  // stage checkpoints would coincide on the same commit.
+  //
+  // We pass the message via stdin with -F - to avoid shell-escaping issues
+  // with the embedded newline.
+  execSync(`git commit --allow-empty -F -`, {
+    cwd: projectDir,
+    input: message,
+    encoding: "utf-8",
+  });
+
   return getHeadSha(projectDir);
 }
 

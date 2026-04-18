@@ -43,8 +43,29 @@ The result: describe a project, clarify it into a complete plan, then walk away.
 - **Real-time agent trace** — streams tool calls, thinking blocks, subagent activity, and results as they happen with GSAP-animated timeline
 - **Spec-kit integration** — discovers specs in `specs/` or `.specify/specs/`, uses `/speckit-plan` and `/speckit-implement` skills
 - **Git automation** — creates branches, commits per phase, and opens PRs with cost/duration metrics
-- **Execution history** — persists all runs, phases, steps, and subagent metadata to SQLite for replay and analysis
+- **Execution history** — persists all runs, phases, steps, and subagent metadata to per-project JSON for replay and analysis
+- **Checkpoints — time-travel over the pipeline** — every completed stage auto-captures a named checkpoint; go back, try again, fan out into N parallel variants, and keep the ones you want. Git under the hood, invisible to the user.
 - **Frameless desktop UI** — custom title bar, 3-column layout (sidebar → task board → agent trace), Catppuccin-inspired dark theme
+
+## Checkpoints (008)
+
+Dex runs a project as a sequence of discrete stages (clarification → constitution → gap-analysis → specify → plan → tasks → implement → verify → learnings). Every completed stage automatically captures a **checkpoint** — a named save point you can rewind to later.
+
+Four user-facing verbs, no git knowledge required:
+
+- **Go back** to any past checkpoint.
+- **Try again** — re-run the current stage (or later stages) differently.
+- **Try N ways** — fork N parallel variants of the next stage, compare, pick one. Spec-only stages run in parallel worktrees, so 3 variants of `plan` take ≈ 1× the wall time, not 3×.
+- **Keep this** — accept a stage's output as the new canonical state.
+
+Plus **Record mode** (top-bar REC badge) — auto-promote every completed stage for team-shared baselines or CI fixtures.
+
+All checkpoints travel via standard `git push --tags`; a collaborator who clones a Record-mode-produced project sees the same checkpoint tree. Power users can query the tree from the terminal:
+
+```sh
+git log --all --grep='^\[checkpoint:'   # every auto-capture commit
+git tag --list 'checkpoint/*'           # every named save point
+```
 
 ## Architecture
 

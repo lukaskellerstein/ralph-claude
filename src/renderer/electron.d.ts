@@ -7,6 +7,81 @@ import type {
   SubagentRecord,
   SpecStats,
 } from "../core/runs.js";
+import type {
+  TimelineSnapshot,
+  VariantGroupFile,
+  VariantSpawnRequest,
+  VariantSpawnResult,
+} from "../core/checkpoints.js";
+
+interface CheckpointsApi {
+  listTimeline(projectDir: string): Promise<TimelineSnapshot>;
+  isLockedByAnother(projectDir: string): Promise<boolean>;
+  checkIsRepo(projectDir: string): Promise<boolean>;
+  checkIdentity(projectDir: string): Promise<{
+    name: string | null;
+    email: string | null;
+    suggestedName: string;
+    suggestedEmail: string;
+  }>;
+  estimateVariantCost(
+    projectDir: string,
+    stage: LoopStageType,
+    variantCount: number,
+  ): Promise<{
+    perVariantMedian: number | null;
+    perVariantP75: number | null;
+    totalMedian: number | null;
+    totalP75: number | null;
+    sampleSize: number;
+  }>;
+  readPendingVariantGroups(projectDir: string): Promise<VariantGroupFile[]>;
+  promote(projectDir: string, tag: string, sha: string): Promise<
+    | { ok: true }
+    | { ok: false; error: string }
+  >;
+  goBack(projectDir: string, tag: string, options?: { force?: "save" | "discard" }): Promise<
+    | { ok: true; branch: string }
+    | { ok: false; error: "dirty_working_tree"; files: string[] }
+    | { ok: false; error: "save_failed"; detail: string }
+    | { ok: false; error: "locked_by_other_instance" }
+    | { ok: false; error: string }
+  >;
+  spawnVariants(
+    projectDir: string,
+    request: VariantSpawnRequest,
+  ): Promise<
+    | { ok: true; result: VariantSpawnResult }
+    | { ok: false; error: string }
+  >;
+  deleteAttempt(projectDir: string, branch: string): Promise<
+    { ok: true } | { ok: false; error: string }
+  >;
+  writeVariantGroup(projectDir: string, group: VariantGroupFile): Promise<
+    { ok: true } | { ok: false; error: string }
+  >;
+  cleanupVariantGroup(
+    projectDir: string,
+    groupId: string,
+    kind: "keep" | "discard",
+    pickedLetter?: string,
+  ): Promise<{ ok: true } | { ok: false; error: string }>;
+  initRepo(projectDir: string): Promise<{ ok: true } | { ok: false; error: string }>;
+  setIdentity(projectDir: string, name: string, email: string): Promise<
+    { ok: true } | { ok: false; error: string }
+  >;
+  setRecordMode(projectDir: string, on: boolean): Promise<{ ok: true }>;
+  setPauseAfterStage(projectDir: string, on: boolean): Promise<{ ok: true }>;
+  compareAttempts(
+    projectDir: string,
+    branchA: string,
+    branchB: string,
+    stage: LoopStageType | null,
+  ): Promise<
+    | { ok: true; diff: string; mode: "path-filtered" | "stat"; paths?: string[] }
+    | { ok: false; error: string }
+  >;
+}
 
 interface DexAPI {
   // Project
@@ -53,6 +128,9 @@ interface DexAPI {
   getLatestPhaseTrace(projectDir: string, specDir: string, phaseNumber: number): Promise<PhaseRecord | null>;
   getSpecPhaseStats(projectDir: string, specDir: string): Promise<PhaseRecord[]>;
   getSpecAggregateStats(projectDir: string, specDir: string): Promise<SpecStats>;
+
+  // Checkpoints (008)
+  checkpoints: CheckpointsApi;
 
   // Window controls
   minimize(): Promise<void>;

@@ -22,6 +22,12 @@ import {
   getHeadSha,
 } from "./git.js";
 import {
+  checkpointTagFor,
+  checkpointDoneTag,
+  captureBranchName,
+  promoteToCheckpoint,
+} from "./checkpoints.js";
+import {
   createInitialState,
   saveState,
   loadState,
@@ -32,7 +38,6 @@ import {
   acquireStateLock,
   resolveWorkingTreeConflict,
   reconcileState,
-  migrateFromDbResume,
   STAGE_ORDER,
 } from "./state.js";
 import type { DexState } from "./state.js";
@@ -1240,14 +1245,109 @@ async function runStage(
       });
       const sha = commitCheckpoint(activeProjectDir, stageType, cycleNumber, specDir ?? null, totalCost);
       await updateState(activeProjectDir, {
-        checkpoint: { sha, timestamp: new Date().toISOString() },
+        lastCommit: { sha, timestamp: new Date().toISOString() },
       });
+
+      // Emit stage_candidate for every completed stage; record the candidate
+      // on the phase record so downstream UX (cost estimator, DEBUG badge) can
+      // reason about it.
+      const checkpointTag = checkpointTagFor(stageType, cycleNumber);
+      let attemptBranch = "";
+      try {
+        attemptBranch = getCurrentBranch(activeProjectDir);
+      } catch {
+        attemptBranch = "";
+      }
+      try {
+        updatePhaseCheckpointInfo(
+          activeProjectDir,
+          runId,
+          phaseTraceId,
+          checkpointTag,
+          sha,
+        );
+      } catch {
+        // non-fatal
+      }
+      emit({
+        type: "stage_candidate",
+        runId,
+        cycleNumber,
+        stage: stageType,
+        checkpointTag,
+        candidateSha: sha,
+        attemptBranch,
+      });
+
+      // Record-mode: auto-promote every candidate to canonical.
+      const recordMode = process.env.DEX_RECORD_MODE === "1" || (await readRecordMode(activeProjectDir));
+      if (recordMode) {
+        const result = promoteToCheckpoint(activeProjectDir, checkpointTag, sha, rlog);
+        if (result.ok) {
+          emit({ type: "checkpoint_promoted", runId, checkpointTag, sha });
+        }
+      }
+
+      // Step mode: pause after every stage awaiting user Keep/Try again.
+      // Resume via config.resume=true picks up at the next stage.
+      const stepMode = Boolean(config.stepMode) || (await readPauseAfterStage(activeProjectDir));
+      if (stepMode) {
+        await updateState(activeProjectDir, {
+          status: "paused",
+          pauseReason: "step_mode",
+          pausedAt: new Date().toISOString(),
+        });
+        emit({
+          type: "paused",
+          runId,
+          reason: "step_mode",
+          stage: stageType,
+        });
+        abortController?.abort();
+      }
     } catch {
       // Checkpoint failure shouldn't crash the run
     }
   }
 
   return { result: resultText, structuredOutput, cost: totalCost, durationMs, inputTokens: totalInputTokens, outputTokens: totalOutputTokens };
+}
+
+async function readPauseAfterStage(projectDir: string): Promise<boolean> {
+  try {
+    const s = await loadState(projectDir);
+    return Boolean(s?.ui?.pauseAfterStage);
+  } catch {
+    return false;
+  }
+}
+
+async function readRecordMode(projectDir: string): Promise<boolean> {
+  try {
+    const s = await loadState(projectDir);
+    return Boolean(s?.ui?.recordMode);
+  } catch {
+    return false;
+  }
+}
+
+function updatePhaseCheckpointInfo(
+  projectDir: string,
+  runId: string,
+  phaseTraceId: string,
+  checkpointTag: string,
+  candidateSha: string,
+): void {
+  try {
+    runs.updateRun(projectDir, runId, (r) => {
+      const ph = r.phases.find((p) => p.phaseTraceId === phaseTraceId);
+      if (!ph) return;
+      ph.checkpointTag = checkpointTag;
+      ph.candidateSha = candidateSha;
+    });
+  } catch {
+    // non-fatal
+  }
 }
 
 // ── Build Mode Runner (extracted from run()) ──
@@ -1441,6 +1541,24 @@ export async function run(config: RunConfig, emit: EmitFn): Promise<void> {
   try {
     releaseLock = await acquireStateLock(config.projectDir);
   } catch (lockErr) {
+    // Before bailing with a lock error, surface any stranded variant groups
+    // so the UI can prompt the user. This happens when a prior session died
+    // mid-fan-out and the user comes back — the emission is informational.
+    try {
+      const pending = (await import("./checkpoints.js")).readPendingVariantGroups(config.projectDir);
+      for (const g of pending) {
+        emit({
+          type: "variant_group_resume_needed",
+          projectDir: config.projectDir,
+          groupId: g.groupId,
+          stage: g.stage,
+          pendingCount: g.variants.filter((v) => v.status === "pending").length,
+          runningCount: g.variants.filter((v) => v.status === "running").length,
+        });
+      }
+    } catch {
+      // non-fatal
+    }
     emit({ type: "error", message: lockErr instanceof Error ? lockErr.message : String(lockErr) });
     abortController = null;
     activeProjectDir = null;
@@ -1451,6 +1569,23 @@ export async function run(config: RunConfig, emit: EmitFn): Promise<void> {
   if (!config.resume) {
     const initialState = createInitialState(config, runId, branchName, baseBranch);
     await saveState(config.projectDir, initialState);
+  }
+
+  // 008: surface any pending variant groups so the UI can prompt for Continue/Discard.
+  try {
+    const pending = (await import("./checkpoints.js")).readPendingVariantGroups(config.projectDir);
+    for (const g of pending) {
+      emit({
+        type: "variant_group_resume_needed",
+        projectDir: config.projectDir,
+        groupId: g.groupId,
+        stage: g.stage,
+        pendingCount: g.variants.filter((v) => v.status === "pending").length,
+        runningCount: g.variants.filter((v) => v.status === "running").length,
+      });
+    }
+  } catch {
+    // non-fatal
   }
 
   emit({ type: "run_started", config, runId, branchName });
@@ -1499,11 +1634,17 @@ export async function run(config: RunConfig, emit: EmitFn): Promise<void> {
     if (activeProjectDir) {
       try {
         if (wasStopped) {
+          // Preserve pauseReason if step_mode already set it; else default to user_abort.
+          const existing = await loadState(activeProjectDir);
+          const reason: "user_abort" | "step_mode" | "budget" | "failure" =
+            existing?.pauseReason === "step_mode" ? "step_mode" : "user_abort";
           await updateState(activeProjectDir, {
             status: "paused",
+            pauseReason: reason,
             pausedAt: new Date().toISOString(),
             cumulativeCostUsd: totalCost,
           });
+          emit({ type: "paused", runId, reason });
         } else {
           await updateState(activeProjectDir, { status: "completed" });
         }
@@ -2033,9 +2174,10 @@ async function runLoop(
     baseBranch = getCurrentBranch(config.projectDir);
     branchName = createBranch(config.projectDir, config.mode);
     rlog.run("INFO", `runLoop: created branch ${branchName} from ${baseBranch}`);
-    // Persist branch info to state so detectStaleState can match on resume
+    // Persist base branch so reconcileState knows the fork point; current branch
+    // is derived from git and no longer stored in DexState.
     if (activeProjectDir) {
-      await updateState(activeProjectDir, { branchName, baseBranch });
+      await updateState(activeProjectDir, { baseBranch });
     }
   }
 
@@ -2939,6 +3081,28 @@ async function runLoop(
 
   emit({ type: "loop_terminated", runId, termination });
   rlog.run("INFO", `runLoop: terminated — reason=${terminationReason}, cycles=${cyclesCompleted}, features=${featuresCompleted.length}/${featuresSkipped.length}`);
+
+  // 008 Record-mode termination — tag checkpoint/done-<slice> and push capture/ anchor.
+  // Only when termination is a genuine finish (gaps_complete or cycles) and record-mode is on.
+  if (activeProjectDir && terminationReason !== "user_abort") {
+    const recordMode = process.env.DEX_RECORD_MODE === "1" || (await readRecordMode(activeProjectDir));
+    if (recordMode) {
+      try {
+        const finalSha = getHeadSha(activeProjectDir);
+        const doneTag = checkpointDoneTag(runId);
+        const promoteResult = promoteToCheckpoint(activeProjectDir, doneTag, finalSha, rlog);
+        if (promoteResult.ok) {
+          emit({ type: "checkpoint_promoted", runId, checkpointTag: doneTag, sha: finalSha });
+        }
+        execSync(
+          `git branch -f ${captureBranchName(runId)} HEAD`,
+          { cwd: activeProjectDir, encoding: "utf-8" },
+        );
+      } catch (err) {
+        rlog.run("WARN", `record-mode termination tagging failed: ${String(err)}`);
+      }
+    }
+  }
 
   return { phasesCompleted: cyclesCompleted, totalCost: cumulativeCost, baseBranch, branchName };
 }

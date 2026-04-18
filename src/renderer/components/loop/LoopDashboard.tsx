@@ -6,6 +6,7 @@ import type { SpecSummary } from "../../hooks/useProject.js";
 import { ProcessStepper } from "./ProcessStepper.js";
 import { CycleTimeline } from "./CycleTimeline.js";
 import { VerticalStepper, type StepItem } from "./VerticalStepper.js";
+import { CheckpointControls } from "../checkpoints/CheckpointControls.js";
 
 type MacroPhase = "prerequisites" | "clarification" | "loop" | "completion";
 type PhaseStatus = "pending" | "active" | "done";
@@ -26,6 +27,8 @@ export interface LoopDashboardProps {
   onImplPhaseClick: (phaseTraceId: string) => void;
   onSelectSpec: (specName: string) => void;
   debugBadge?: React.ReactNode;
+  /** 008: the project dir to thread into CheckpointControls. */
+  projectDir: string | null;
 }
 
 const CLARIFICATION_STAGE_TYPES = [
@@ -605,6 +608,7 @@ export function LoopDashboard({
   onImplPhaseClick,
   onSelectSpec,
   debugBadge,
+  projectDir,
 }: LoopDashboardProps) {
   const activePhase = deriveActivePhase(isCheckingPrerequisites, isClarifying, preCycleStages, cycles, loopTermination, isRunning);
   const [selectedPhase, setSelectedPhase] = useState<MacroPhase>(activePhase);
@@ -679,6 +683,8 @@ export function LoopDashboard({
           </div>
         )}
       </div>
+
+      {projectDir && <CheckpointControls projectDir={projectDir} />}
     </div>
   );
 }

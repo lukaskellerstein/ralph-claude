@@ -63,13 +63,13 @@ Horizontal lanes matching standard git-flow layout. Canonical timeline at the to
 
 ### Rendering
 
-Primary implementation: [`@gitgraph/react`](https://github.com/nicoespeon/gitgraph.js) with the "metro" template. SVG output, native support for branches/commits/tags/click handlers.
+Custom **D3 + SVG** adapter rendered by React. Vertical orientation (canonical trunk top-to-bottom, attempts/variants branching to the right), curved elbow edges.
 
-**Open question for implementer**: verify `@gitgraph/react` has been maintained recently (check npm last-publish + GitHub issue cadence). If stale, fall back to:
+- **React owns the DOM** — nodes and edges are React SVG components. Click/hover handlers are plain React props; no library escape hatches for context menus, tooltips, or selection styling.
+- **d3 owns what it's best at** — `d3-zoom` for pan/zoom gestures, `d3-shape` (`linkVertical`) for curved edges. Layout itself is a pure TypeScript function (deterministic lane assignment from the commit DAG — canonical = lane 0, attempts take the next free lane, variant groups occupy adjacent lanes).
+- **Why custom, not a library** — `@gitgraph/react` is archived. React Flow's MIT core is capable but the Pro-upgrade pull is a long-term risk for a pillar feature. Mermaid's `gitGraph` directive is string-based and lacks rich click/hover handlers. D3 gives full control at ~400 LOC.
 
-- **`mermaid` with `gitGraph` directive** — widely maintained, less customizable.
-- **React Flow** — general graph library, requires custom node rendering.
-- **Custom D3 / SVG** — max flexibility, most code.
+Dependencies added: `d3-zoom`, `d3-selection`, `d3-shape` (~12 kB gz total).
 
 ## Per-stage summaries
 

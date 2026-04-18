@@ -1,0 +1,50 @@
+name: refresh dex-ecommerce checkpoints
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"    # Mondays 06:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      DEX_RECORD_MODE: "1"
+    steps:
+      - name: Checkout dex-ecommerce
+        uses: actions/checkout@v4
+        with:
+          repository: lukaskellerstein/dex-ecommerce
+          token: ${{ secrets.FIXTURE_PAT }}
+          fetch-depth: 0
+
+      - name: Checkout dex orchestrator
+        uses: actions/checkout@v4
+        with:
+          path: dex-orchestrator
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dex dependencies
+        working-directory: dex-orchestrator
+        run: npm install --no-audit --no-fund
+
+      - name: Build dex
+        working-directory: dex-orchestrator
+        run: npm run build
+
+      - name: Run loop with Record mode
+        # The orchestrator is typically driven via the UI; in headless CI we
+        # invoke the packaged run() entry directly. Placeholder script — the
+        # actual invocation depends on how the CI-friendly runner is wired up.
+        run: |
+          echo "DEX_RECORD_MODE=${DEX_RECORD_MODE}"
+          echo "NOTE: headless runner integration pending — see plan S12."
+
+      - name: Push checkpoint tags + capture branches
+        run: |
+          git -C . push --tags --force origin 'refs/tags/checkpoint/*' || true
+          git -C . push --force origin 'refs/heads/capture/*' || true

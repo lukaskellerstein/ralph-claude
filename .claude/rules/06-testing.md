@@ -37,25 +37,32 @@ For any test that exercises the full loop (welcome screen → loop start → aut
 
 ### Step 1 — Reset the example project
 
-Before every test run, restore `dex-ecommerce` to a known state. The project ships a single entry point for this — `dex/scripts/reset-example-to.sh` — which supports three checkpoints:
+Before every test run, restore `dex-ecommerce` to a known state. The project ships a single entry point for this — `scripts/reset-example-to.sh` — which is now **checkpoint-aware** (008-interactive-checkpoint):
 
 ```bash
-./dex/scripts/reset-example-to.sh <checkpoint>
+./scripts/reset-example-to.sh list                   # list all available checkpoints
+./scripts/reset-example-to.sh clean                  # blank slate on main (destructive)
+./scripts/reset-example-to.sh <checkpoint-name>      # reset to checkpoint/<name>
 ```
 
-| Checkpoint | Skips | Approx. time saved |
-|---|---|---|
-| `clean` | nothing — full run from `prerequisites` | baseline |
-| `after-clarification` | `prerequisites`, `clarification_*`, `constitution`, `manifest_extraction` | ~5–10 min |
-| `after-tasks` | everything above plus `gap_analysis`, `specify`, `plan`, `tasks` | ~15–20 min |
+Any tag of the form `checkpoint/cycle-N-after-<stage>` (or `checkpoint/after-<stage>` for cycle 0) can be used as a reset target. The script creates a fresh `attempt-<ts>` branch and restores the working tree to exactly that checkpoint's state, preserving gitignored files (`.env`, build output, editor state — `git clean -fd`, never `-fdx`).
 
 **Picking a checkpoint**:
 
-- Your change only touches the implement loop or later (`implement`, `implement_fix`, `verify`, `learnings`) → use `after-tasks`.
-- Your change only touches `gap_analysis`, `specify`, `plan`, or `tasks` → use `after-clarification`.
-- Your change touches `prerequisites`, any `clarification_*`, `constitution`, or `manifest_extraction`, or you're validating non-regression → use `clean`.
+- Your change only touches the implement loop or later → use the most recent `cycle-N-after-tasks`.
+- Your change touches `gap_analysis`, `specify`, `plan`, or `tasks` → use the most recent `cycle-N-after-manifest-extraction` or `after-manifest-extraction` if it's cycle 0.
+- Your change touches `prerequisites`, any `clarification_*`, `constitution`, `manifest_extraction`, or you're validating non-regression → use `clean`.
 
-After restoring a fixture, the welcome submit button reads **Open Existing** (because the folder exists) and the loop page's primary button reads **Resume** (because loop history is present). Clicking **Resume** auto-routes to `config.resume=true` — the orchestrator skips `prerequisites`, reuses the existing `runId`, and resumes from the next stage after `state.lastCompletedStage`.
+**Legacy fixtures**: `fixture/after-clarification` and `fixture/after-tasks` have been deleted — they're fully replaced by the `checkpoint/*` tag tree. Any references to `fixture/*` in older docs are obsolete.
+
+After restoring a checkpoint, the welcome submit button reads **Open Existing** (because the folder exists) and the loop page's primary button reads **Resume** (because loop history is present). Clicking **Resume** auto-routes to `config.resume=true` — the orchestrator skips `prerequisites`, reuses the existing `runId`, and resumes from the next stage after `state.lastCompletedStage`.
+
+**Power-user terminal workflow**: every `commitCheckpoint` commit is stamped with a `[checkpoint:<stage>:<cycle>]` line. Query the full checkpoint tree without the UI:
+
+```bash
+git log --all --grep='^\[checkpoint:' --oneline
+git tag --list 'checkpoint/*' | sort
+```
 
 Sanity check — after reset, inspect the workspace:
 
@@ -63,13 +70,11 @@ Sanity check — after reset, inspect the workspace:
 cd /home/lukas/Projects/Github/lukaskellerstein/dex-ecommerce && git status --short && ls
 ```
 
-For `clean`, `ls` must show only `GOAL.md` and `.git/`. For fixtures, the tree matches the committed fixture branch.
+For `clean`, `ls` must show only `GOAL.md` and `.git/`. For a checkpoint reset, the tree matches that checkpoint's commit.
 
-**Fixture branch reservation**: `fixture/*` is a reserved branch namespace on `dex-ecommerce`. Exactly two fixtures exist at all times: `fixture/after-clarification` and `fixture/after-tasks`. They are refreshed by force-moving the pointer in place (`git branch -f`) — versioned variants (`fixture/after-tasks-v2`, etc.) are not created. See [specs/005-testing-improvements/quickstart.md §1](../../specs/005-testing-improvements/quickstart.md) for the full refresh workflow and [contracts/README.md](../../specs/005-testing-improvements/contracts/README.md) for the script's exit-code contract.
+**Branch hygiene**: autonomous runs leave behind `dex/YYYY-MM-DD-xxxxxx` branches; go-backs and variants leave behind `attempt-*` branches. Run `./scripts/prune-example-branches.sh` periodically — it deletes `dex/*` branches older than 7 days and `attempt-*` branches older than 30 days. `main`, `fixture/*` (if any linger), `lukas/*`, `checkpoint/*` (tags are immune), and `capture/*` are always preserved.
 
-**Branch hygiene**: autonomous runs leave behind `dex/YYYY-MM-DD-xxxxxx` branches. Run `./dex/scripts/prune-example-branches.sh` periodically to delete `dex/*` branches older than 7 days (`main`, `fixture/*`, and `lukas/*` are always preserved).
-
-`reset-example-to.sh` and `prune-example-branches.sh` are the **only authorized destructive paths** against `dex-ecommerce` — they inherit the trust boundary of the legacy reset procedure. You do not need to ask before running them against `dex-ecommerce`. Never run them against any other repo.
+`reset-example-to.sh`, `prune-example-branches.sh`, and `promote-checkpoint.sh` are the **only authorized destructive paths** against `dex-ecommerce`. You do not need to ask before running them against `dex-ecommerce`. Never run them against any other repo.
 
 ### Step 2 — Ensure the dev server is running
 
