@@ -463,89 +463,83 @@ export async function resolveWorkingTreeConflict(projectDir: string): Promise<De
 }
 
 // ── Reconciliation ──
+//
+// reconcileState detects drift between persisted state and the actual on-disk
+// world (git, artifact files, tasks.md checkboxes, manifest, pending question).
+// Each check below is independent and contributes warnings/blockers/patches
+// into a single accumulator; they're composed sequentially in reconcileState.
 
-export async function reconcileState(
+interface DriftAccumulator {
+  warnings: string[];
+  blockers: string[];
+  statePatches: DeepPartial<DexState>;
+  driftSummary: DriftSummary;
+  featurePatches: Record<string, DeepPartial<FeatureArtifacts>>;
+}
+
+function checkGitDrift(
   projectDir: string,
   state: DexState,
-  emit?: EmitFn,
-  runId?: string
-): Promise<ReconciliationResult> {
-  if (emit && runId) {
-    emit({ type: "state_reconciling", runId } as never);
+  acc: DriftAccumulator,
+): void {
+  if (!state.lastCommit.sha) return;
+  try {
+    const currentHead = getHeadSha(projectDir);
+    if (currentHead === state.lastCommit.sha) return;
+    const extra = countCommitsBetween(projectDir, state.lastCommit.sha, currentHead);
+    acc.driftSummary.extraCommits = extra;
+    acc.warnings.push(`${extra} commit(s) added since last orchestrator commit`);
+    acc.statePatches.lastCommit = { sha: currentHead, timestamp: new Date().toISOString() };
+  } catch {
+    acc.warnings.push("Could not compare last commit — proceeding with current state");
   }
+}
 
-  const warnings: string[] = [];
-  const blockers: string[] = [];
-  const statePatches: DeepPartial<DexState> = {};
-  const driftSummary: DriftSummary = {
-    missingArtifacts: [],
-    modifiedArtifacts: [],
-    taskRegressions: {},
-    taskProgressions: {},
-    extraCommits: 0,
-    pendingQuestionReask: false,
-  };
+async function checkArtifactDrift(
+  projectDir: string,
+  state: DexState,
+  acc: DriftAccumulator,
+): Promise<void> {
+  const artifactChecks: Array<{ entry: ArtifactEntry }> = [];
 
-  // 1. Git lastCommit comparison
-  if (state.lastCommit.sha) {
-    try {
-      const currentHead = getHeadSha(projectDir);
-      if (currentHead !== state.lastCommit.sha) {
-        const extra = countCommitsBetween(projectDir, state.lastCommit.sha, currentHead);
-        driftSummary.extraCommits = extra;
-        warnings.push(`${extra} commit(s) added since last orchestrator commit`);
-        statePatches.lastCommit = { sha: currentHead, timestamp: new Date().toISOString() };
-      }
-    } catch {
-      warnings.push("Could not compare last commit — proceeding with current state");
-    }
-  }
-
-  // 2. Artifact existence + hash check
-  const artifactChecks: Array<{ name: string; entry: ArtifactEntry; category: string }> = [];
-
-  const topLevel: Array<[string, ArtifactEntry | null]> = [
-    ["goalFile", state.artifacts.goalFile],
-    ["clarifiedGoal", state.artifacts.clarifiedGoal],
-    ["productDomain", state.artifacts.productDomain],
-    ["technicalDomain", state.artifacts.technicalDomain],
-    ["constitution", state.artifacts.constitution],
+  const topLevel: Array<ArtifactEntry | null> = [
+    state.artifacts.goalFile,
+    state.artifacts.clarifiedGoal,
+    state.artifacts.productDomain,
+    state.artifacts.technicalDomain,
+    state.artifacts.constitution,
   ];
-
-  for (const [name, entry] of topLevel) {
-    if (entry) artifactChecks.push({ name, entry, category: "top" });
+  for (const entry of topLevel) {
+    if (entry) artifactChecks.push({ entry });
+  }
+  for (const feature of Object.values(state.artifacts.features)) {
+    if (feature.spec) artifactChecks.push({ entry: feature.spec });
+    if (feature.plan) artifactChecks.push({ entry: feature.plan });
+    if (feature.tasks) artifactChecks.push({ entry: feature.tasks });
   }
 
-  for (const [specDir, feature] of Object.entries(state.artifacts.features)) {
-    if (feature.spec) artifactChecks.push({ name: `${specDir}/spec`, entry: feature.spec, category: specDir });
-    if (feature.plan) artifactChecks.push({ name: `${specDir}/plan`, entry: feature.plan, category: specDir });
-    if (feature.tasks) artifactChecks.push({ name: `${specDir}/tasks`, entry: feature.tasks, category: specDir });
-  }
-
-  // Parallel hash check
+  // Parallel hash check — preserved as deliberate optimization.
   const hashResults = await Promise.all(
-    artifactChecks.map(async ({ name, entry, category }) => {
+    artifactChecks.map(async ({ entry }) => {
       const fullPath = path.join(projectDir, entry.path);
-      if (!fs.existsSync(fullPath)) {
-        return { name, entry, category, status: "missing" as const };
-      }
+      if (!fs.existsSync(fullPath)) return { entry, status: "missing" as const };
       const currentHash = await hashFile(fullPath);
-      if (currentHash !== entry.sha256) {
-        return { name, entry, category, status: "modified" as const };
-      }
-      return { name, entry, category, status: "ok" as const };
-    })
+      if (currentHash !== entry.sha256) return { entry, status: "modified" as const };
+      return { entry, status: "ok" as const };
+    }),
   );
 
   for (const result of hashResults) {
-    if (result.status === "missing") {
-      driftSummary.missingArtifacts.push(result.entry.path);
-    } else if (result.status === "modified") {
-      driftSummary.modifiedArtifacts.push(result.entry.path);
-    }
+    if (result.status === "missing") acc.driftSummary.missingArtifacts.push(result.entry.path);
+    else if (result.status === "modified") acc.driftSummary.modifiedArtifacts.push(result.entry.path);
   }
+}
 
-  // 3. Tasks.md checkbox comparison
+function checkTaskDrift(
+  projectDir: string,
+  state: DexState,
+  acc: DriftAccumulator,
+): void {
   for (const [specDir, feature] of Object.entries(state.artifacts.features)) {
     if (!feature.tasks) continue;
     const tasksPath = path.join(projectDir, feature.tasks.path);
@@ -561,124 +555,207 @@ export async function reconcileState(
       if (!wasChecked && checkedNow) progressions.push(taskId);
     }
 
-    if (regressions.length > 0) driftSummary.taskRegressions[specDir] = regressions;
-    if (progressions.length > 0) driftSummary.taskProgressions[specDir] = progressions;
+    if (regressions.length > 0) acc.driftSummary.taskRegressions[specDir] = regressions;
+    if (progressions.length > 0) acc.driftSummary.taskProgressions[specDir] = progressions;
   }
+}
 
-  // 4. Pending question re-ask
-  if (state.pendingQuestion) {
-    driftSummary.pendingQuestionReask = true;
-    blockers.push(`Pending question from ${state.pendingQuestion.context}: "${state.pendingQuestion.question}"`);
-  }
+function checkPendingQuestionDrift(state: DexState, acc: DriftAccumulator): void {
+  if (!state.pendingQuestion) return;
+  acc.driftSummary.pendingQuestionReask = true;
+  acc.blockers.push(
+    `Pending question from ${state.pendingQuestion.context}: "${state.pendingQuestion.question}"`,
+  );
+}
 
-  // 5. Reconciliation decision matrix
-  let resumeStep = state.lastCompletedStep;
-  let resumeCycle = state.currentCycleNumber;
-  let resumePhase = state.currentPhase;
-  let resumeSpecDir = state.currentSpecDir ?? undefined;
+interface ResumeCursor {
+  phase: Phase;
+  cycleNumber: number;
+  step: StepType | null;
+  specDir: string | undefined;
+}
 
-  // Check for clarified goal deletion/modification
+/**
+ * Apply per-feature drift decisions to determine resume cursor and feature
+ * patches: deleted spec → reset to specifying, deleted plan → reset to
+ * planning, regressed tasks → resume implement, etc.
+ */
+function deriveResumeCursor(state: DexState, acc: DriftAccumulator): ResumeCursor {
+  const cursor: ResumeCursor = {
+    phase: state.currentPhase,
+    cycleNumber: state.currentCycleNumber,
+    step: state.lastCompletedStep,
+    specDir: state.currentSpecDir ?? undefined,
+  };
+
   if (state.artifacts.clarifiedGoal) {
     const goalPath = state.artifacts.clarifiedGoal.path;
-    if (driftSummary.missingArtifacts.includes(goalPath)) {
-      resumePhase = "clarification";
-      resumeStep = null;
-      warnings.push("GOAL_clarified.md deleted — resetting to clarification phase");
-    } else if (driftSummary.modifiedArtifacts.includes(goalPath)) {
-      blockers.push("GOAL_clarified.md was modified. Re-run gap analysis? Choose: re-run or accept.");
+    if (acc.driftSummary.missingArtifacts.includes(goalPath)) {
+      cursor.phase = "clarification";
+      cursor.step = null;
+      acc.warnings.push("GOAL_clarified.md deleted — resetting to clarification phase");
+    } else if (acc.driftSummary.modifiedArtifacts.includes(goalPath)) {
+      acc.blockers.push(
+        "GOAL_clarified.md was modified. Re-run gap analysis? Choose: re-run or accept.",
+      );
     }
   }
 
-  // Check for constitution deletion
-  if (state.artifacts.constitution && driftSummary.missingArtifacts.includes(state.artifacts.constitution.path)) {
-    warnings.push("constitution.md deleted — will re-run constitution before next cycle");
+  if (
+    state.artifacts.constitution &&
+    acc.driftSummary.missingArtifacts.includes(state.artifacts.constitution.path)
+  ) {
+    acc.warnings.push("constitution.md deleted — will re-run constitution before next cycle");
   }
 
-  // Check feature-level drift
-  const featurePatches: Record<string, DeepPartial<FeatureArtifacts>> = {};
   for (const [specDir, feature] of Object.entries(state.artifacts.features)) {
-    if (feature.spec && driftSummary.missingArtifacts.includes(feature.spec.path)) {
-      featurePatches[specDir] = { status: "specifying", spec: null, plan: null, tasks: null, lastImplementedPhase: 0 };
+    if (feature.spec && acc.driftSummary.missingArtifacts.includes(feature.spec.path)) {
+      acc.featurePatches[specDir] = {
+        status: "specifying",
+        spec: null,
+        plan: null,
+        tasks: null,
+        lastImplementedPhase: 0,
+      };
       if (state.currentSpecDir === specDir) {
-        resumeStep = "specify" as StepType;
-        warnings.push(`spec.md deleted for ${specDir} — resetting to specifying`);
+        cursor.step = "specify" as StepType;
+        acc.warnings.push(`spec.md deleted for ${specDir} — resetting to specifying`);
       }
-    } else if (feature.plan && driftSummary.missingArtifacts.includes(feature.plan.path)) {
-      featurePatches[specDir] = { status: "planning", plan: null, tasks: null, lastImplementedPhase: 0 };
+    } else if (feature.plan && acc.driftSummary.missingArtifacts.includes(feature.plan.path)) {
+      acc.featurePatches[specDir] = {
+        status: "planning",
+        plan: null,
+        tasks: null,
+        lastImplementedPhase: 0,
+      };
       if (state.currentSpecDir === specDir) {
-        resumeStep = "plan" as StepType;
-        warnings.push(`plan.md deleted for ${specDir} — resetting to planning`);
+        cursor.step = "plan" as StepType;
+        acc.warnings.push(`plan.md deleted for ${specDir} — resetting to planning`);
       }
     }
 
-    // Task regressions → resume implement from earliest unchecked
-    if (driftSummary.taskRegressions[specDir]?.length) {
-      warnings.push(`Tasks unchecked in ${specDir} — will resume implement from earliest unchecked phase`);
-      if (state.currentSpecDir === specDir) {
-        resumeStep = "implement" as StepType;
-      }
+    if (acc.driftSummary.taskRegressions[specDir]?.length) {
+      acc.warnings.push(
+        `Tasks unchecked in ${specDir} — will resume implement from earliest unchecked phase`,
+      );
+      if (state.currentSpecDir === specDir) cursor.step = "implement" as StepType;
     }
-
-    // Task progressions → accept and update state
-    if (driftSummary.taskProgressions[specDir]?.length) {
-      warnings.push(`Tasks manually checked in ${specDir} — accepting progression`);
+    if (acc.driftSummary.taskProgressions[specDir]?.length) {
+      acc.warnings.push(`Tasks manually checked in ${specDir} — accepting progression`);
     }
   }
 
-  // Manifest reconciliation: sync FeatureArtifacts with feature-manifest.json
+  return cursor;
+}
+
+/**
+ * Sync FeatureArtifacts entries with feature-manifest.json — manifest is
+ * authoritative for active/completed status. Failure is non-fatal.
+ */
+function reconcileWithManifest(
+  projectDir: string,
+  state: DexState,
+  acc: DriftAccumulator,
+): void {
   try {
     const manifestPath = path.join(projectDir, ".dex", "feature-manifest.json");
-    if (fs.existsSync(manifestPath)) {
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-      if (manifest?.features && Array.isArray(manifest.features)) {
-        for (const entry of manifest.features) {
-          if (entry.status === "active" && entry.specDir && !state.artifacts.features[entry.specDir]) {
-            // Manifest says active but no FeatureArtifacts entry — create one
-            featurePatches[entry.specDir] = { specDir: entry.specDir, status: "specifying", spec: null, plan: null, tasks: null, lastImplementedPhase: 0 };
-            warnings.push(`Manifest reconciliation: created FeatureArtifacts for ${entry.specDir} (manifest says active)`);
-          } else if (entry.status === "completed" && entry.specDir && state.artifacts.features[entry.specDir]) {
-            const fa = state.artifacts.features[entry.specDir];
-            if (fa.status !== "completed") {
-              featurePatches[entry.specDir] = { status: "completed" };
-              warnings.push(`Manifest reconciliation: updated ${entry.specDir} to completed (manifest says completed)`);
-            }
-          }
+    if (!fs.existsSync(manifestPath)) return;
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    if (!manifest?.features || !Array.isArray(manifest.features)) return;
+
+    for (const entry of manifest.features) {
+      if (entry.status === "active" && entry.specDir && !state.artifacts.features[entry.specDir]) {
+        acc.featurePatches[entry.specDir] = {
+          specDir: entry.specDir,
+          status: "specifying",
+          spec: null,
+          plan: null,
+          tasks: null,
+          lastImplementedPhase: 0,
+        };
+        acc.warnings.push(
+          `Manifest reconciliation: created FeatureArtifacts for ${entry.specDir} (manifest says active)`,
+        );
+      } else if (
+        entry.status === "completed" &&
+        entry.specDir &&
+        state.artifacts.features[entry.specDir]
+      ) {
+        const fa = state.artifacts.features[entry.specDir];
+        if (fa.status !== "completed") {
+          acc.featurePatches[entry.specDir] = { status: "completed" };
+          acc.warnings.push(
+            `Manifest reconciliation: updated ${entry.specDir} to completed (manifest says completed)`,
+          );
         }
       }
     }
   } catch {
-    // Manifest reconciliation failure is non-fatal
+    // Non-fatal.
+  }
+}
+
+function computeNextStep(resumeStep: StepType | null): StepType {
+  if (!resumeStep) return STEP_ORDER[0];
+  const idx = STEP_ORDER.indexOf(resumeStep);
+  return idx < STEP_ORDER.length - 1 ? STEP_ORDER[idx + 1] : resumeStep;
+}
+
+export async function reconcileState(
+  projectDir: string,
+  state: DexState,
+  emit?: EmitFn,
+  runId?: string,
+): Promise<ReconciliationResult> {
+  if (emit && runId) {
+    emit({ type: "state_reconciling", runId } as never);
   }
 
-  if (Object.keys(featurePatches).length > 0) {
-    statePatches.artifacts = { features: featurePatches as never };
-  }
+  const acc: DriftAccumulator = {
+    warnings: [],
+    blockers: [],
+    statePatches: {},
+    featurePatches: {},
+    driftSummary: {
+      missingArtifacts: [],
+      modifiedArtifacts: [],
+      taskRegressions: {},
+      taskProgressions: {},
+      extraCommits: 0,
+      pendingQuestionReask: false,
+    },
+  };
 
-  // Determine the next step to execute (the one after lastCompletedStep)
-  let nextStep: StepType;
-  if (!resumeStep) {
-    nextStep = STEP_ORDER[0];
-  } else {
-    const idx = STEP_ORDER.indexOf(resumeStep);
-    nextStep = idx < STEP_ORDER.length - 1 ? STEP_ORDER[idx + 1] : resumeStep;
+  // Order matters: artifact drift populates missingArtifacts/modifiedArtifacts
+  // which deriveResumeCursor reads to make per-feature decisions.
+  checkGitDrift(projectDir, state, acc);
+  await checkArtifactDrift(projectDir, state, acc);
+  checkTaskDrift(projectDir, state, acc);
+  checkPendingQuestionDrift(state, acc);
+
+  const cursor = deriveResumeCursor(state, acc);
+  reconcileWithManifest(projectDir, state, acc);
+
+  if (Object.keys(acc.featurePatches).length > 0) {
+    acc.statePatches.artifacts = { features: acc.featurePatches as never };
   }
 
   const result: ReconciliationResult = {
-    canResume: blockers.length === 0 || driftSummary.pendingQuestionReask,
+    canResume: acc.blockers.length === 0 || acc.driftSummary.pendingQuestionReask,
     resumeFrom: {
-      phase: resumePhase,
-      cycleNumber: resumeCycle,
-      step: nextStep,
-      specDir: resumeSpecDir,
+      phase: cursor.phase,
+      cycleNumber: cursor.cycleNumber,
+      step: computeNextStep(cursor.step),
+      specDir: cursor.specDir,
     },
-    warnings,
-    blockers,
-    statePatches,
-    driftSummary,
+    warnings: acc.warnings,
+    blockers: acc.blockers,
+    statePatches: acc.statePatches,
+    driftSummary: acc.driftSummary,
   };
 
   if (emit && runId) {
-    emit({ type: "state_reconciled", runId, driftSummary } as never);
+    emit({ type: "state_reconciled", runId, driftSummary: acc.driftSummary } as never);
   }
 
   return result;

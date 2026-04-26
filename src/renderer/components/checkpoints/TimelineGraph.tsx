@@ -1,15 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { select as d3Select } from "d3-selection";
-import { zoom as d3Zoom, zoomIdentity, type ZoomTransform } from "d3-zoom";
-import { linkVertical } from "d3-shape";
-import {
-  layoutTimeline,
-  type LaidOutNode,
-  type LaidOutEdge,
-  type LayoutOutput,
-  type ColorState,
-} from "./timelineLayout";
+import { useRef, type MouseEvent } from "react";
+import { type LaidOutNode, type ColorState } from "./timelineLayout";
 import type { TimelineSnapshot, TimelineCommit } from "../../../core/checkpoints.js";
+import { useD3Timeline } from "./hooks/useD3Timeline.js";
 
 interface Props {
   snapshot: TimelineSnapshot;
@@ -47,51 +39,9 @@ function shortBranch(name: string): string {
 
 /** React-owned SVG, d3-zoom for pan/zoom, d3-shape for path geometry. */
 export function TimelineGraph({ snapshot, onJumpTo, onContextMenu, headSha, onUnselect }: Props) {
-  const svgRef = useRef<SVGSVGElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const [hovered, setHovered] = useState<LaidOutNode | null>(null);
-  const [transform, setTransform] = useState<ZoomTransform>(zoomIdentity);
-
-  const layout: LayoutOutput = useMemo(
-    () => layoutTimeline(snapshot, { laneWidth: 170, rowHeight: 30, headerHeight: 40, gutterGap: 36 }),
-    [snapshot],
-  );
-
-  useEffect(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    const zoom = d3Zoom<SVGSVGElement, unknown>()
-      .scaleExtent([0.25, 4])
-      .on("zoom", (event) => {
-        setTransform(event.transform);
-      });
-    const sel = d3Select(svg);
-    sel.call(zoom);
-    return () => {
-      sel.on(".zoom", null);
-    };
-  }, []);
-
-  const nodeById = useMemo(() => new Map(layout.nodes.map((n) => [n.id, n])), [layout.nodes]);
-
-  const linkGen = useMemo(
-    () =>
-      linkVertical<LaidOutEdge, { x: number; y: number }>()
-        .source((e) => {
-          // Edges with an explicit fromPoint (e.g. "trunk-sprout") originate
-          // from a phantom point on the trunk lane, not from a real node.
-          if (e.fromPoint) return e.fromPoint;
-          const n = nodeById.get(e.fromId);
-          return n ? { x: n.x, y: n.y } : { x: 0, y: 0 };
-        })
-        .target((e) => {
-          const n = nodeById.get(e.toId);
-          return n ? { x: n.x, y: n.y } : { x: 0, y: 0 };
-        })
-        .x((p) => p.x)
-        .y((p) => p.y),
-    [nodeById],
-  );
+  const { svgRef, layout, nodeById, linkGen, transform, hovered, setHovered } =
+    useD3Timeline(snapshot);
 
   if (layout.nodes.length === 0) {
     return (

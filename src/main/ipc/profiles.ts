@@ -4,24 +4,7 @@ import {
   saveDexJson,
   type DexJsonShape,
 } from "../../core/agent-profile.js";
-import { acquireStateLock } from "../../core/state.js";
-
-async function withLock<T>(
-  projectDir: string,
-  fn: () => Promise<T> | T,
-): Promise<T | { ok: false; error: "locked_by_other_instance" }> {
-  let release: (() => void) | null = null;
-  try {
-    release = await acquireStateLock(projectDir);
-  } catch {
-    return { ok: false, error: "locked_by_other_instance" } as const;
-  }
-  try {
-    return await fn();
-  } finally {
-    release();
-  }
-}
+import { withLock } from "./lock-utils.js";
 
 export function registerProfilesHandlers(): void {
   // Read-only — no lock required.

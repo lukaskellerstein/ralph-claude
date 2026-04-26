@@ -10,31 +10,11 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import type { AgentStats } from "../../utils/computeStats.js";
-
-function formatDuration(ms: number | null): string {
-  if (ms == null) return "--";
-  if (ms < 1000) return `${ms}ms`;
-  const totalSec = Math.floor(ms / 1000);
-  if (totalSec < 60) return `${totalSec}s`;
-  const min = Math.floor(totalSec / 60);
-  const sec = totalSec % 60;
-  if (min < 60) return `${min}m ${sec}s`;
-  const hr = Math.floor(min / 60);
-  const remMin = min % 60;
-  return `${hr}h ${remMin}m`;
-}
-
-function formatCost(usd: number | null): string {
-  if (usd == null) return "--";
-  return `$${usd.toFixed(3)}`;
-}
-
-function formatTokens(n: number | null): string {
-  if (n == null) return "--";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
-}
+import {
+  formatDurationDetailed as formatDuration,
+  formatCost,
+  formatTokens,
+} from "../../utils/formatters.js";
 
 function MetricItem({
   icon,

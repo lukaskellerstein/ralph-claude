@@ -5,6 +5,7 @@ import type { UiLoopStage, ImplementSubPhase, LatestAction } from "../../hooks/u
 import type { SpecSummary } from "../../hooks/useProject.js";
 import { SpecCard } from "../project-overview/SpecCard.js";
 import { useNow, relativeTimeShort } from "../../hooks/useNow.js";
+import { MetaBadge } from "../shared/MetaBadge.js";
 
 const CYCLE_STAGES: StepType[] = [
   "gap_analysis",
@@ -126,12 +127,6 @@ function deriveStageStatus(
   if (pausePendingStage === stageType) return "pause-pending";
 
   return "pending";
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 60_000) return `${(ms / 1000).toFixed(0)}s`;
-  if (ms < 3_600_000) return `${(ms / 60_000).toFixed(1)}m`;
-  return `${(ms / 3_600_000).toFixed(1)}h`;
 }
 
 function StatusDot({ status }: { status: StageStatus }) {
@@ -295,11 +290,8 @@ function StageRow({
         </span>
 
         {/* Cost + Duration */}
-        {(isCompleted || isPaused) && (costUsd > 0 || durationMs > 0) && (
-          <div style={{ display: "flex", gap: 8, fontSize: "0.7rem", fontFamily: "var(--font-mono)", color: "var(--foreground-dim)" }}>
-            {costUsd > 0 && <span>${costUsd.toFixed(2)}</span>}
-            {durationMs > 0 && <span>{formatDuration(durationMs)}</span>}
-          </div>
+        {(isCompleted || isPaused) && (
+          <MetaBadge costUsd={costUsd} durationMs={durationMs} />
         )}
 
         {isRunning && (

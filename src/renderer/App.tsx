@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bug, Check, RotateCw, FolderOpen } from "lucide-react";
+import { Bug, RotateCw } from "lucide-react";
+import { CopyBadge } from "./components/shared/CopyBadge.js";
+import { WelcomeScreen, type WelcomeNextView } from "./components/welcome/WelcomeScreen.js";
 import type { TaskPhase, RunConfig, SubagentInfo } from "../core/types.js";
 import { AgentStepList } from "./components/agent-trace/AgentStepList.js";
 import { SubagentDetailView } from "./components/agent-trace/SubagentDetailView.js";
@@ -58,36 +60,13 @@ function buildDebugPayload(ctx: DebugContext): string {
 }
 
 function DebugCopyBadge({ context }: { context: DebugContext }) {
-  const [copied, setCopied] = useState(false);
-  const handleClick = useCallback(() => {
-    navigator.clipboard.writeText(buildDebugPayload(context));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }, [context]);
   return (
-    <span
-      title={copied ? "Copied!" : "Copy debug context to clipboard"}
-      onClick={handleClick}
-      style={{
-        fontSize: "0.68rem",
-        padding: "1px 5px",
-        borderRadius: "var(--radius)",
-        background: copied
-          ? "color-mix(in srgb, var(--status-success) 15%, var(--surface-elevated))"
-          : "var(--surface-elevated)",
-        border: `1px solid ${copied ? "var(--status-success)" : "var(--border)"}`,
-        color: copied ? "var(--status-success)" : "var(--foreground-dim)",
-        fontFamily: "var(--font-mono)",
-        cursor: "pointer",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        transition: "background 0.15s, border-color 0.15s, color 0.15s",
-      }}
-    >
-      {copied ? <Check size={10} /> : <Bug size={10} />}
-      {copied ? "copied" : "debug"}
-    </span>
+    <CopyBadge
+      getCopyText={() => buildDebugPayload(context)}
+      label="debug"
+      icon={<Bug size={10} />}
+      title="Copy debug context to clipboard"
+    />
   );
 }
 
@@ -106,24 +85,6 @@ export default function App() {
     [selectedSubagentId, orchestrator.subagents]
   );
   const [, setTick] = useState(0);
-  const [welcomePath, setWelcomePath] = useState("");
-  const [welcomeName, setWelcomeName] = useState("");
-  const [welcomeError, setWelcomeError] = useState<string | null>(null);
-  const [welcomeTargetExists, setWelcomeTargetExists] = useState(false);
-
-  // Populate the welcome inputs from ~/.dex/app-config.json on mount.
-  // The random postfix in the name template is freshly expanded each load.
-  useEffect(() => {
-    if (project.projectDir) return;
-    let cancelled = false;
-    (async () => {
-      const defaults = await window.dexAPI.getWelcomeDefaults();
-      if (cancelled) return;
-      setWelcomePath((current) => current || defaults.defaultLocation);
-      setWelcomeName((current) => current || defaults.defaultName);
-    })();
-    return () => { cancelled = true; };
-  }, [project.projectDir]);
 
   const handleOpenProject = useCallback(async () => {
     const dir = await project.openProject();
@@ -133,22 +94,9 @@ export default function App() {
     }
   }, [project.openProject, orchestrator.loadRunHistory]);
 
-  // Debounced existence check for the welcome form's target path
-  useEffect(() => {
-    if (project.projectDir) return;
-    const path = welcomePath.trim();
-    const name = welcomeName.trim();
-    if (!path || !name) {
-      setWelcomeTargetExists(false);
-      return;
-    }
-    const target = `${path.replace(/\/$/, "")}/${name}`;
-    const id = setTimeout(async () => {
-      const exists = await window.dexAPI.pathExists(target);
-      setWelcomeTargetExists(exists);
-    }, 150);
-    return () => clearTimeout(id);
-  }, [welcomePath, welcomeName, project.projectDir]);
+  const handleWelcomeComplete = useCallback((next: WelcomeNextView) => {
+    setCurrentView(next);
+  }, []);
 
   // Tick every second while running so duration updates in realtime
   useEffect(() => {
@@ -243,39 +191,6 @@ export default function App() {
       }
     }
   }, [orchestrator.isRunning, orchestrator.mode]);
-
-  const handlePickFolder = useCallback(async () => {
-    const folder = await window.dexAPI.pickFolder();
-    if (folder) {
-      setWelcomePath(folder);
-      setWelcomeError(null);
-    }
-  }, []);
-
-  const handleWelcomeSubmit = useCallback(async () => {
-    const path = welcomePath.trim();
-    const name = welcomeName.trim();
-    if (!path || !name) return;
-    const target = `${path.replace(/\/$/, "")}/${name}`;
-
-    if (welcomeTargetExists) {
-      const result = await project.openProjectPath(target);
-      if ("error" in result) {
-        setWelcomeError(result.error);
-        return;
-      }
-      const hasHistory = await orchestrator.loadRunHistory(result.path);
-      setCurrentView(hasHistory ? "loop-dashboard" : "overview");
-      return;
-    }
-
-    const result = await project.createProject(path, name);
-    if ("error" in result) {
-      setWelcomeError(result.error);
-      return;
-    }
-    setCurrentView("loop-start");
-  }, [welcomePath, welcomeName, welcomeTargetExists, project.openProjectPath, project.createProject, orchestrator.loadRunHistory]);
 
   const handleStartLoop = (loopConfig: {
     descriptionFile?: string;
@@ -442,122 +357,13 @@ export default function App() {
   let content;
 
   if (!project.projectDir) {
-    const canSubmit = welcomePath.trim() !== "" && welcomeName.trim() !== "";
-    const combinedPath = `${welcomePath.trim().replace(/\/$/, "")}/${welcomeName.trim()}`;
     content = (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          paddingTop: 120,
-          gap: 16,
-          color: "var(--foreground-dim)",
-        }}
-      >
-        <span style={{ fontSize: "0.88rem" }}>Create a new project or open an existing one</span>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, width: 440 }}>
-          <div>
-            <label style={{ fontSize: "0.78rem", color: "var(--foreground-dim)", display: "block", marginBottom: 6 }}>
-              Location
-            </label>
-            <div style={{ display: "flex", gap: 6 }}>
-              <input
-                data-testid="welcome-path"
-                type="text"
-                value={welcomePath}
-                onChange={(e) => { setWelcomePath(e.target.value); setWelcomeError(null); }}
-                placeholder="~/Projects/Temp"
-                style={{
-                  flex: 1,
-                  padding: "8px 10px",
-                  borderRadius: "var(--radius)",
-                  border: "1px solid var(--border)",
-                  background: "var(--surface-elevated)",
-                  color: "var(--foreground)",
-                  fontSize: "0.84rem",
-                  fontFamily: "var(--font-mono)",
-                  outline: "none",
-                  boxSizing: "border-box",
-                }}
-              />
-              <button
-                data-testid="welcome-pick-folder"
-                onClick={handlePickFolder}
-                title="Pick folder"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 36,
-                  padding: 0,
-                  borderRadius: "var(--radius)",
-                  border: "1px solid var(--border)",
-                  background: "var(--surface-elevated)",
-                  color: "var(--foreground-muted)",
-                  cursor: "pointer",
-                }}
-              >
-                <FolderOpen size={14} />
-              </button>
-            </div>
-          </div>
-          <div>
-            <label style={{ fontSize: "0.78rem", color: "var(--foreground-dim)", display: "block", marginBottom: 6 }}>
-              Project name
-            </label>
-            <input
-              data-testid="welcome-name"
-              type="text"
-              value={welcomeName}
-              onChange={(e) => { setWelcomeName(e.target.value); setWelcomeError(null); }}
-              onKeyDown={(e) => { if (e.key === "Enter" && canSubmit) handleWelcomeSubmit(); }}
-              placeholder="my-awesome-project"
-              style={{
-                width: "100%",
-                padding: "8px 10px",
-                borderRadius: "var(--radius)",
-                border: `1px solid ${welcomeError ? "var(--status-error)" : "var(--border)"}`,
-                background: "var(--surface-elevated)",
-                color: "var(--foreground)",
-                fontSize: "0.84rem",
-                fontFamily: "var(--font-mono)",
-                outline: "none",
-                boxSizing: "border-box",
-              }}
-            />
-          </div>
-          {canSubmit && (
-            <div style={{ fontSize: "0.72rem", color: "var(--foreground-dim)", fontFamily: "var(--font-mono)" }}>
-              {combinedPath}
-            </div>
-          )}
-          {welcomeError && (
-            <div style={{ fontSize: "0.76rem", color: "var(--status-error)" }}>
-              {welcomeError}
-            </div>
-          )}
-          <button
-            data-testid="welcome-submit"
-            onClick={handleWelcomeSubmit}
-            disabled={!canSubmit}
-            style={{
-              marginTop: 4,
-              padding: "8px 16px",
-              background: canSubmit ? "var(--primary)" : "var(--surface-elevated)",
-              color: canSubmit ? "#fff" : "var(--foreground-disabled)",
-              borderRadius: "var(--radius)",
-              fontWeight: 500,
-              fontSize: "0.84rem",
-              cursor: canSubmit ? "pointer" : "not-allowed",
-              border: "none",
-            }}
-          >
-            {welcomeTargetExists ? "Open Existing" : "New"}
-          </button>
-        </div>
-      </div>
+      <WelcomeScreen
+        openProjectPath={project.openProjectPath}
+        createProject={project.createProject}
+        loadRunHistory={orchestrator.loadRunHistory}
+        onComplete={handleWelcomeComplete}
+      />
     );
   } else if (currentView === "subagent-detail" && selectedSubagent) {
     content = (

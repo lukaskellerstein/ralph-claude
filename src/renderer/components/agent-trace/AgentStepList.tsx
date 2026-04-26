@@ -1,10 +1,12 @@
-import { useRef, useEffect, useMemo, useState, useCallback } from "react";
-import { Copy, Check, Bot, Clock } from "lucide-react";
+import { useRef, useEffect, useMemo, useState } from "react";
+import { Copy, Bot, Clock } from "lucide-react";
 import type { AgentStep, SubagentInfo } from "../../../core/types.js";
 import { AgentStepItem } from "./AgentStepItem.js";
 import { SubagentList } from "./SubagentList.js";
 import { computeStats } from "../../utils/computeStats.js";
 import { StatsBar } from "../shared/StatsBar.js";
+import { CopyBadge } from "../shared/CopyBadge.js";
+import { formatDurationShort as formatDuration } from "../../utils/formatters.js";
 
 const LINE_LEFT = 20; // center of the vertical line
 const DOT_SIZE = 9;
@@ -21,14 +23,6 @@ function formatDelta(ms: number): string {
   return `+${(ms / 60_000).toFixed(1)}m`;
 }
 
-function formatDuration(ms: number): string {
-  const sec = Math.round(ms / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  const rem = sec % 60;
-  return `${min}m ${rem}s`;
-}
-
 interface AgentStepListProps {
   steps: AgentStep[];
   isRunning: boolean;
@@ -43,39 +37,14 @@ interface AgentStepListProps {
 }
 
 function CopyIdBadge({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
-  const handleClick = useCallback(() => {
-    navigator.clipboard.writeText(`AgentID: ${value}`);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }, [value]);
-
   return (
-    <span
-      title={copied ? "Copied!" : "Click to copy"}
-      onClick={handleClick}
-      style={{
-        fontSize: "0.68rem",
-        padding: "1px 5px",
-        borderRadius: "var(--radius)",
-        background: copied
-          ? "color-mix(in srgb, var(--status-success) 15%, var(--surface-elevated))"
-          : "var(--surface-elevated)",
-        border: `1px solid ${copied ? "var(--status-success)" : "var(--border)"}`,
-        color: copied ? "var(--status-success)" : "var(--foreground-dim)",
-        fontFamily: "var(--font-mono)",
-        textTransform: "none",
-        letterSpacing: "normal",
-        cursor: "pointer",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        transition: "background 0.15s, border-color 0.15s, color 0.15s",
-      }}
-    >
-      {value}
-      {copied ? <Check size={10} /> : <Copy size={10} />}
-    </span>
+    <CopyBadge
+      getCopyText={() => `AgentID: ${value}`}
+      label={value}
+      icon={<Copy size={10} />}
+      iconPosition="right"
+      title="Click to copy"
+    />
   );
 }
 

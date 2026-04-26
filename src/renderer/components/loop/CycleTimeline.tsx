@@ -4,12 +4,7 @@ import type { StepType } from "../../../core/types.js";
 import type { UiLoopCycle, UiLoopStage, LatestAction } from "../../hooks/useOrchestrator.js";
 import type { SpecSummary } from "../../hooks/useProject.js";
 import { StageList } from "./StageList.js";
-
-function formatDuration(ms: number): string {
-  if (ms < 60_000) return `${(ms / 1000).toFixed(0)}s`;
-  if (ms < 3_600_000) return `${(ms / 60_000).toFixed(1)}m`;
-  return `${(ms / 3_600_000).toFixed(1)}h`;
-}
+import { formatDurationCompact as formatDuration } from "../../utils/formatters.js";
 
 function CycleTimelineItem({
   cycle,

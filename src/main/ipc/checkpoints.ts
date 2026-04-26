@@ -16,24 +16,17 @@ import {
   unmarkCheckpoint,
   unselect,
   syncStateFromHead,
+  PATHS_BY_STEP,
   type VariantSpawnRequest,
   type VariantGroupFile,
   type JumpToResult,
 } from "../../core/checkpoints.js";
-import { acquireStateLock } from "../../core/state.js";
 import * as runs from "../../core/runs.js";
 import type { StepType } from "../../core/types.js";
+import { withLock } from "./lock-utils.js";
+import { createIpcLogger } from "./logger.js";
 
-// Minimal run-logger adapter for IPC-triggered operations.
-const ipcLogger = {
-  run: (level: "INFO" | "WARN" | "ERROR" | "DEBUG", msg: string, extra?: unknown) => {
-    if (level === "ERROR" || level === "WARN") {
-      console.warn(`[checkpoints-ipc] ${level} ${msg}`, extra ?? "");
-    } else {
-      console.info(`[checkpoints-ipc] ${level} ${msg}`, extra ?? "");
-    }
-  },
-};
+const ipcLogger = createIpcLogger("checkpoints-ipc");
 
 function gitExec(cmd: string, projectDir: string): string {
   return execSync(cmd, { cwd: projectDir, encoding: "utf-8" }).trim();
@@ -46,33 +39,6 @@ function gitExecSilent(cmd: string, projectDir: string): string {
     return "";
   }
 }
-
-async function withLock<T>(
-  projectDir: string,
-  fn: () => Promise<T> | T,
-): Promise<T | { ok: false; error: "locked_by_other_instance" }> {
-  let release: (() => void) | null = null;
-  try {
-    release = await acquireStateLock(projectDir);
-  } catch {
-    return { ok: false, error: "locked_by_other_instance" } as const;
-  }
-  try {
-    return await fn();
-  } finally {
-    release();
-  }
-}
-
-const PATH_BY_STEP: Partial<Record<StepType, string[]>> = {
-  gap_analysis: [".dex/feature-manifest.json"],
-  manifest_extraction: [".dex/feature-manifest.json"],
-  specify: ["specs/"],
-  plan: ["specs/"],
-  tasks: ["specs/"],
-  learnings: [".dex/learnings.md"],
-  verify: [".dex/verify-output/"],
-};
 
 export function registerCheckpointsHandlers(): void {
   // ── Read-only ─────────────────────────────────────────
@@ -325,7 +291,7 @@ export function registerCheckpointsHandlers(): void {
     "checkpoints:compareAttempts",
     (_e, projectDir: string, branchA: string, branchB: string, step: StepType | null) => {
       try {
-        const paths = step ? PATH_BY_STEP[step] : undefined;
+        const paths = step ? PATHS_BY_STEP[step] : undefined;
         if (paths && paths.length > 0) {
           const diff = gitExecSilent(
             `git diff ${branchA}..${branchB} -- ${paths.map((p) => `"${p}"`).join(" ")}`,
