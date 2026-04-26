@@ -92,7 +92,7 @@ interface CheckpointsApi {
   >;
 }
 
-interface DexAPI {
+export interface DexAPI {
   // Project
   openProject(): Promise<string | null>;
   listSpecs(dir: string): Promise<string[]>;

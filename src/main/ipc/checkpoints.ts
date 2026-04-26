@@ -20,20 +20,12 @@ import {
   type VariantGroupFile,
   type JumpToResult,
 } from "../../core/checkpoints.js";
-import { acquireStateLock } from "../../core/state.js";
 import * as runs from "../../core/runs.js";
 import type { StepType } from "../../core/types.js";
+import { withLock } from "./lock-utils.js";
+import { createIpcLogger } from "./logger.js";
 
-// Minimal run-logger adapter for IPC-triggered operations.
-const ipcLogger = {
-  run: (level: "INFO" | "WARN" | "ERROR" | "DEBUG", msg: string, extra?: unknown) => {
-    if (level === "ERROR" || level === "WARN") {
-      console.warn(`[checkpoints-ipc] ${level} ${msg}`, extra ?? "");
-    } else {
-      console.info(`[checkpoints-ipc] ${level} ${msg}`, extra ?? "");
-    }
-  },
-};
+const ipcLogger = createIpcLogger("checkpoints-ipc");
 
 function gitExec(cmd: string, projectDir: string): string {
   return execSync(cmd, { cwd: projectDir, encoding: "utf-8" }).trim();
@@ -44,23 +36,6 @@ function gitExecSilent(cmd: string, projectDir: string): string {
     return execSync(cmd, { cwd: projectDir, encoding: "utf-8" }).trim();
   } catch {
     return "";
-  }
-}
-
-async function withLock<T>(
-  projectDir: string,
-  fn: () => Promise<T> | T,
-): Promise<T | { ok: false; error: "locked_by_other_instance" }> {
-  let release: (() => void) | null = null;
-  try {
-    release = await acquireStateLock(projectDir);
-  } catch {
-    return { ok: false, error: "locked_by_other_instance" } as const;
-  }
-  try {
-    return await fn();
-  } finally {
-    release();
   }
 }
 
