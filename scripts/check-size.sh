@@ -10,14 +10,13 @@
 set -euo pipefail
 
 # Allow-list mirrors docs/my-specs/011-refactoring/file-size-exceptions.md.
-# Two perpetual exceptions plus three scheduled deferrals (each retires when
-# its target wave lands). See the exceptions doc for per-file rationale.
+# Two perpetual exceptions only — all scheduled deferrals retired with their wave:
+#   - main-loop.ts retired when A4.5 landed (824 → 573 LOC)
+#   - useOrchestrator.ts retired when Wave B landed (910 → 511 LOC)
+#   - App.tsx retired when Wave C-rest landed (717 → 506 LOC)
 ALLOWLIST=(
   src/core/state.ts                       # perpetual — 01X-state-reconciliation
   src/core/agent/ClaudeAgentRunner.ts     # perpetual — TBD SDK-adapter spec
-  # main-loop.ts retired from allow-list when A4.5 landed (824 → 573 LOC).
-  src/renderer/hooks/useOrchestrator.ts   # scheduled — Wave B (Phase 5)
-  src/renderer/App.tsx                    # scheduled — Wave C-rest (Phase 6)
 )
 
 # Find files >600 LOC under src/. `wc -l` emits a trailing "total" line we filter out.
