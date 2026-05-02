@@ -107,18 +107,6 @@ export type OrchestratorEvent =
       runId: string;
       reason: "user_abort" | "step_mode" | "budget" | "failure";
       step?: StepType;
-    }
-  | {
-      type: "variant_group_resume_needed";
-      projectDir: string;
-      groupId: string;
-      step: StepType;
-      pendingCount: number;
-      runningCount: number;
-    }
-  | {
-      type: "variant_group_complete";
-      groupId: string;
     };
 
 export type EmitFn = (event: OrchestratorEvent) => void;

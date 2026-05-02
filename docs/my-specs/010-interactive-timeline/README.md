@@ -1,5 +1,7 @@
 # 010 Interactive Timeline — Click-to-jump + Variant Agent Profiles
 
+> **Status:** The "Keep this", "Unmark kept", "Try N ways from here", and Step Candidate prompt sections of this spec are superseded by `012-cleanup`. Record Mode auto-promote, Go-Back, and Jump-to-Checkpoint remain authoritative.
+
 ## Context
 
 The Loop Dashboard has two tabs — Steps and Timeline — but their roles aren't clear:

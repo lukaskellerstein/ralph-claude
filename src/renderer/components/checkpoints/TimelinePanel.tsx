@@ -2,8 +2,6 @@ import { useCallback, useState } from "react";
 import { useTimeline } from "./hooks/useTimeline";
 import { GoBackConfirm } from "./GoBackConfirm";
 import { TimelineGraph } from "./TimelineGraph";
-import { CommitContextMenu } from "./CommitContextMenu";
-import type { TimelineCommit } from "../../../core/checkpoints.js";
 import { checkpointService } from "../../services/checkpointService.js";
 
 interface Props {
@@ -11,8 +9,6 @@ interface Props {
   /** Disabled: no git repo / no identity. */
   disabled?: boolean;
   disabledReason?: string;
-  /** Right-click "Try N ways from here" — parent opens the variant modal. */
-  onTryNWaysAt?: (commit: TimelineCommit) => void;
 }
 
 interface DirtyEnvelope {
@@ -21,38 +17,17 @@ interface DirtyEnvelope {
   files: string[];
 }
 
-interface MenuState {
-  commit: TimelineCommit;
-  isKept: boolean;
-  position: { x: number; y: number };
-}
-
 /**
- * Canonical step-commit tag for a (step, cycleNumber) pair, mirroring the
- * core's `checkpointTagFor` helper. Kept inline here to avoid pulling the
- * core module into the renderer at runtime.
- */
-function tagFor(step: string, cycleNumber: number): string {
-  const slug = step.replaceAll("_", "-");
-  return cycleNumber === 0
-    ? `checkpoint/after-${slug}`
-    : `checkpoint/cycle-${cycleNumber}-after-${slug}`;
-}
-
-/**
- * 010 — full-width Timeline canvas. Single-click on a node calls jumpTo;
- * right-click opens the CommitContextMenu (Keep / Unmark / Try N ways).
+ * 010 — full-width Timeline canvas. Single-click on a node calls jumpTo.
  * No side detail panel, no bottom past-attempts list.
  */
 export function TimelinePanel({
   projectDir,
   disabled,
   disabledReason,
-  onTryNWaysAt,
 }: Props) {
   const { snapshot, refresh } = useTimeline(projectDir);
   const [dirty, setDirty] = useState<DirtyEnvelope | null>(null);
-  const [menu, setMenu] = useState<MenuState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [focusedBranch, setFocusedBranch] = useState<string | null>(null);
 
@@ -93,40 +68,6 @@ export function TimelinePanel({
   );
 
   const handleJump = useCallback((sha: string) => performJump(sha), [performJump]);
-
-  const handleKeep = useCallback(
-    async (commit: TimelineCommit) => {
-      setError(null);
-      const tag = tagFor(commit.step, commit.cycleNumber);
-      const r = await checkpointService.promote(projectDir, tag, commit.sha);
-      if (!("ok" in r) || !r.ok) {
-        setError(`Keep failed: ${("error" in r && r.error) || "unknown"}`);
-        return;
-      }
-      await refresh();
-    },
-    [projectDir, refresh],
-  );
-
-  const handleUnkeep = useCallback(
-    async (commit: TimelineCommit) => {
-      setError(null);
-      const r = await checkpointService.unmark(projectDir, commit.sha);
-      if (!("ok" in r) || !r.ok) {
-        setError(`Unmark failed: ${("error" in r && r.error) || "unknown"}`);
-        return;
-      }
-      await refresh();
-    },
-    [projectDir, refresh],
-  );
-
-  const handleTryNWays = useCallback(
-    (commit: TimelineCommit) => {
-      onTryNWaysAt?.(commit);
-    },
-    [onTryNWaysAt],
-  );
 
   const handleUnselect = useCallback(
     async (branchName: string) => {
@@ -185,25 +126,11 @@ export function TimelinePanel({
       <TimelineGraph
         snapshot={snapshot}
         onJumpTo={handleJump}
-        onContextMenu={(commit, position) => {
-          setMenu({ commit, isKept: commit.hasCheckpointTag, position });
-        }}
         headSha={headSha}
         onUnselect={handleUnselect}
         focusedBranch={focusedBranch}
         onBranchFocus={handleBranchFocus}
       />
-      {menu && (
-        <CommitContextMenu
-          commit={menu.commit}
-          isKept={menu.isKept}
-          position={menu.position}
-          onKeep={handleKeep}
-          onUnkeep={handleUnkeep}
-          onTryNWays={handleTryNWays}
-          onClose={() => setMenu(null)}
-        />
-      )}
       {dirty && (
         <GoBackConfirm
           tag={`commit ${dirty.targetSha.slice(0, 7)}`}

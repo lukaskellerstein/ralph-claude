@@ -9,9 +9,6 @@ import type {
 } from "../core/runs.js";
 import type {
   TimelineSnapshot,
-  VariantGroupFile,
-  VariantSpawnRequest,
-  VariantSpawnResult,
   JumpToResult,
 } from "../core/checkpoints.js";
 import type {
@@ -28,27 +25,6 @@ interface CheckpointsApi {
     suggestedName: string;
     suggestedEmail: string;
   }>;
-  estimateVariantCost(
-    projectDir: string,
-    step: StepType,
-    variantCount: number,
-  ): Promise<{
-    perVariantMedian: number | null;
-    perVariantP75: number | null;
-    totalMedian: number | null;
-    totalP75: number | null;
-    sampleSize: number;
-  }>;
-  readPendingVariantGroups(projectDir: string): Promise<VariantGroupFile[]>;
-  promote(projectDir: string, tag: string, sha: string): Promise<
-    | { ok: true }
-    | { ok: false; error: string }
-  >;
-  unmark(projectDir: string, sha: string): Promise<
-    | { ok: true; deleted: string[] }
-    | { ok: false; error: string }
-    | { ok: false; error: "locked_by_other_instance" }
-  >;
   unselect(projectDir: string, branchName: string): Promise<
     | { ok: true; switchedTo: string | null; deleted: string }
     | { ok: false; error: string }
@@ -64,31 +40,9 @@ interface CheckpointsApi {
     targetSha: string,
     options?: { force?: "save" | "discard" },
   ): Promise<JumpToResult | { ok: false; error: "locked_by_other_instance" }>;
-  spawnVariants(
-    projectDir: string,
-    request: VariantSpawnRequest,
-  ): Promise<
-    | { ok: true; result: VariantSpawnResult }
-    | { ok: false; error: string }
-  >;
-  cleanupVariantGroup(
-    projectDir: string,
-    groupId: string,
-    kind: "keep" | "discard",
-    pickedLetter?: string,
-  ): Promise<{ ok: true } | { ok: false; error: string }>;
   initRepo(projectDir: string): Promise<{ ok: true } | { ok: false; error: string }>;
   setIdentity(projectDir: string, name: string, email: string): Promise<
     { ok: true } | { ok: false; error: string }
-  >;
-  compareAttempts(
-    projectDir: string,
-    branchA: string,
-    branchB: string,
-    step: StepType | null,
-  ): Promise<
-    | { ok: true; diff: string; mode: "path-filtered" | "stat"; paths?: string[] }
-    | { ok: false; error: string }
   >;
 }
 

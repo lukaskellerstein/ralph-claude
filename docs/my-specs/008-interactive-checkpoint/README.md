@@ -1,5 +1,7 @@
 # 008 Interactive Checkpoint — Branch, Version, and Retry Without Git
 
+> **Status:** The "Keep this", "Unmark kept", "Try N ways from here", and Step Candidate prompt sections of this spec are superseded by `012-cleanup`. Record Mode auto-promote, Go-Back, and Jump-to-Checkpoint remain authoritative.
+
 ## Why this exists
 
 Dex runs projects as a pipeline of discrete stages: `gap_analysis → specify → plan → tasks → implement → verify → learnings`, plus pre-cycle stages (`prerequisites`, `clarification_*`, `constitution`, `manifest_extraction`). Every stage produces inspectable output.

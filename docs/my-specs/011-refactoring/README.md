@@ -1,5 +1,7 @@
 # 011 Refactoring — Phase 2: Simplify Dex for AI-Agent Modification
 
+> **Status:** References to `variants.ts`, `spawnVariants`, and the "Keep this / Unmark kept / Try N ways from here" verbs in this spec are superseded by `012-cleanup` — those code paths and UI affordances have been removed. Record Mode auto-promote, Go-Back, and Jump-to-Checkpoint remain authoritative.
+
 ## Context
 
 Dex is increasingly modified by AI agents — both external Claude Code instances working on Dex itself and the orchestrator's own subagents inspecting the code mid-run. The current shape fights that goal:

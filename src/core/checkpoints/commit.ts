@@ -41,9 +41,9 @@ export function commitCheckpoint(
     `[checkpoint:${stage}:${cycleNumber}]`;
 
   // Explicit allow-list of committable Dex artifacts. Anything else under
-  // `.dex/` (state.json, state.lock, variant-groups/, worktrees/,
-  // dex-config.json, mock-config.json) is per-developer / runtime and stays
-  // out of git. Add to this list when introducing a new committable artifact.
+  // `.dex/` (state.json, state.lock, dex-config.json, mock-config.json) is
+  // per-developer / runtime and stays out of git. Add to this list when
+  // introducing a new committable artifact.
   tryStage(projectDir, ".dex/feature-manifest.json");
   tryStage(projectDir, ".dex/learnings.md");
   tryStage(projectDir, ".dex/runs/");
