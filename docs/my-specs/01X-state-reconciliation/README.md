@@ -1,5 +1,7 @@
 # 011 — State reconciliation: make state.json the cache the spec already says it is
 
+> **Status:** References to "Try N ways" / "Keep this" / "Unmark kept" verbs in this spec are superseded by `012-cleanup` — those verbs have been removed. Record Mode auto-promote, Go-Back, and Jump-to-Checkpoint remain authoritative.
+
 ## Why this exists
 
 A fresh loop run on `dex-ecommerce` produced a UI that contradicted itself, contradicted git, and contradicted its own state.json — all at the same time, on a single Stop click.

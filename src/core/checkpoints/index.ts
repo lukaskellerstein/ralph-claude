@@ -29,16 +29,8 @@ export {
 export {
   jumpTo,
   unselect,
-  unmarkCheckpoint,
   type JumpToResult,
 } from "./jumpTo.js";
-
-export {
-  spawnVariants,
-  cleanupVariantWorktree,
-  type VariantSpawnRequest,
-  type VariantSpawnResult,
-} from "./variants.js";
 
 export {
   listTimeline,
@@ -49,14 +41,6 @@ export {
   type TimelineCommit,
   type TimelineSnapshot,
 } from "./timeline.js";
-
-export {
-  writeVariantGroupFile,
-  readVariantGroupFile,
-  deleteVariantGroupFile,
-  readPendingVariantGroups,
-  type VariantGroupFile,
-} from "./variantGroups.js";
 
 export {
   commitCheckpoint,
@@ -83,19 +67,8 @@ import {
 import {
   jumpTo,
   unselect,
-  unmarkCheckpoint,
 } from "./jumpTo.js";
-import {
-  spawnVariants,
-  cleanupVariantWorktree,
-} from "./variants.js";
 import { listTimeline } from "./timeline.js";
-import {
-  writeVariantGroupFile,
-  readVariantGroupFile,
-  deleteVariantGroupFile,
-  readPendingVariantGroups,
-} from "./variantGroups.js";
 import { commitCheckpoint, readPauseAfterStage } from "./commit.js";
 
 /**
@@ -131,18 +104,7 @@ export const checkpoints = {
   // Jump-to + cleanup
   jumpTo,
   unselect,
-  unmark: unmarkCheckpoint,
-
-  // Variants
-  spawnVariants,
-  cleanupVariantWorktree,
 
   // Timeline (read-side)
   listTimeline,
-
-  // Variant-group state IO
-  readVariantGroupFile,
-  writeVariantGroupFile,
-  deleteVariantGroupFile,
-  readPendingVariantGroups,
 } as const;

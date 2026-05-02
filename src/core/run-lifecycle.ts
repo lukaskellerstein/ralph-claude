@@ -1,6 +1,6 @@
 /**
- * What: Run-level setup and teardown helpers — `initRun` does the bootstrap (crash-recovery, branch resolution, runId/rlog, runs-table init, agent-runner resolution, state-lock acquisition, initial state file, variant-group emission, ctx construction); `finalizeRun` does the teardown (status persistence, lock release, PR creation, run_completed emit). The mutable `runtimeState` bag holds the bridge globals (currentContext, abortController, releaseLock, …) so orchestrator.ts and other modules can read them without circular setters.
- * Not: Does not own the per-mode dispatch (run() in orchestrator.ts decides loop vs build). Does not own lock-failure variant emission semantics — that's a one-shot inside initRun's lock catch path. Does not run the actual phases (those are stages/*).
+ * What: Run-level setup and teardown helpers — `initRun` does the bootstrap (crash-recovery, branch resolution, runId/rlog, runs-table init, agent-runner resolution, state-lock acquisition, initial state file, ctx construction); `finalizeRun` does the teardown (status persistence, lock release, PR creation, run_completed emit). The mutable `runtimeState` bag holds the bridge globals (currentContext, abortController, releaseLock, …) so orchestrator.ts and other modules can read them without circular setters.
+ * Not: Does not own the per-mode dispatch (run() in orchestrator.ts decides loop vs build). Does not run the actual phases (those are stages/*).
  * Deps: createContext (context.ts), runs.* (audit init/finalize), git.{getCurrentBranch, createBranch, createPullRequest}, state.{loadState, saveState, updateState, createInitialState, acquireStateLock}, agent.createAgentRunner, dexConfig.loadDexConfig, log.{RunLogger, fallbackLog}.
  */
 
@@ -137,7 +137,6 @@ export async function initRun(
   try {
     runtimeState.releaseLock = await acquireStateLock(config.projectDir);
   } catch (lockErr) {
-    await emitPendingVariantGroups(config.projectDir, emit);
     emit({ type: "error", message: lockErr instanceof Error ? lockErr.message : String(lockErr) });
     runtimeState.abortController = null;
     runtimeState.activeProjectDir = null;
@@ -149,8 +148,6 @@ export async function initRun(
     const initialState = createInitialState(config, runId, branchName, baseBranch);
     await saveState(config.projectDir, initialState);
   }
-
-  await emitPendingVariantGroups(config.projectDir, emit);
 
   emit({ type: "run_started", config, runId, branchName });
 
@@ -254,25 +251,4 @@ export async function finalizeRun(args: FinalizeArgs): Promise<void> {
   }
 
   emit({ type: "run_completed", totalCost, totalDuration, taskPhasesCompleted, branchName, prUrl });
-}
-
-// ── Helper: emit any pending variant groups so the UI can prompt resume ────
-
-async function emitPendingVariantGroups(projectDir: string, emit: EmitFn): Promise<void> {
-  try {
-    const checkpoints = await import("./checkpoints.js");
-    const pending = checkpoints.readPendingVariantGroups(projectDir);
-    for (const g of pending) {
-      emit({
-        type: "variant_group_resume_needed",
-        projectDir,
-        groupId: g.groupId,
-        step: g.step,
-        pendingCount: g.variants.filter((v) => v.status === "pending").length,
-        runningCount: g.variants.filter((v) => v.status === "running").length,
-      });
-    }
-  } catch {
-    // non-fatal
-  }
 }

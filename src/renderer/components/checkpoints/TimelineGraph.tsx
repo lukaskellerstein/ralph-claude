@@ -1,4 +1,4 @@
-import { useRef, type MouseEvent } from "react";
+import { useRef } from "react";
 import { type LaidOutNode, type LaidOutEdge, type ColorState } from "./timelineLayout";
 import type { TimelineSnapshot, TimelineCommit } from "../../../core/checkpoints.js";
 import { useD3Timeline } from "./hooks/useD3Timeline.js";
@@ -7,8 +7,6 @@ interface Props {
   snapshot: TimelineSnapshot;
   /** Left-click on a step-commit. Caller invokes checkpointService.jumpTo. */
   onJumpTo: (sha: string) => void;
-  /** Right-click on a step-commit. Caller opens CommitContextMenu. */
-  onContextMenu?: (commit: TimelineCommit, position: { x: number; y: number }) => void;
   /** SHA corresponding to current HEAD; rendered with subtle emphasis. */
   headSha?: string | null;
   /** Click the ✕ on a `selected-*` lane's badge. Caller calls checkpoints:unselect. */
@@ -88,7 +86,6 @@ function rightAnglePath(
 export function TimelineGraph({
   snapshot,
   onJumpTo,
-  onContextMenu,
   headSha,
   onUnselect,
   focusedBranch,
@@ -127,12 +124,6 @@ export function TimelineGraph({
     } else if (n.node.kind === "start") {
       onJumpTo(n.node.data.sha);
     }
-  };
-
-  const handleContextMenu = (n: LaidOutNode, ev: MouseEvent<SVGGElement>) => {
-    if (!onContextMenu || n.node.kind !== "step-commit") return;
-    ev.preventDefault();
-    onContextMenu(n.node.data, { x: ev.clientX, y: ev.clientY });
   };
 
   const renderEdge = (e: LaidOutEdge) => {
@@ -376,7 +367,6 @@ export function TimelineGraph({
                 onMouseEnter={() => setHovered(n)}
                 onMouseLeave={() => setHovered(null)}
                 onClick={() => handleClick(n)}
-                onContextMenu={(ev) => handleContextMenu(n, ev)}
                 opacity={dotOpacity}
               >
                 {isHead && (

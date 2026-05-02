@@ -12,14 +12,8 @@ import {
   labelFor,
   isParallelizable,
   promoteToCheckpoint,
-  unmarkCheckpoint,
   unselect,
-  spawnVariants,
   listTimeline,
-  writeVariantGroupFile,
-  readVariantGroupFile,
-  deleteVariantGroupFile,
-  readPendingVariantGroups,
   CHECKPOINT_MESSAGE_PREFIX,
 } from "../checkpoints.ts";
 import type { StepType } from "../types.ts";
@@ -151,53 +145,6 @@ test("promoteToCheckpoint: happy path + idempotent + bad SHA", () => {
   }
 });
 
-test("spawnVariants: parallel stage creates worktrees", () => {
-  const dir = mkTmpRepo();
-  try {
-    const sha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf-8" }).trim();
-    promoteToCheckpoint(dir, "checkpoint/cycle-1-after-tasks", sha);
-
-    const r = spawnVariants(dir, {
-      fromCheckpoint: "checkpoint/cycle-1-after-tasks",
-      variantLetters: ["a", "b", "c"],
-      step: "plan",
-    });
-    assert.equal(r.ok, true);
-    if (r.ok) {
-      assert.equal(r.result.parallel, true);
-      assert.equal(r.result.branches.length, 3);
-      assert.equal(r.result.worktrees?.length, 3);
-      for (const wt of r.result.worktrees!) {
-        assert.ok(fs.existsSync(path.join(dir, wt)), `worktree ${wt} should exist`);
-      }
-    }
-  } finally {
-    rmTmp(dir);
-  }
-});
-
-test("spawnVariants: sequential stage creates branches only", () => {
-  const dir = mkTmpRepo();
-  try {
-    const sha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf-8" }).trim();
-    promoteToCheckpoint(dir, "checkpoint/cycle-1-after-tasks", sha);
-
-    const r = spawnVariants(dir, {
-      fromCheckpoint: "checkpoint/cycle-1-after-tasks",
-      variantLetters: ["a", "b"],
-      step: "implement",
-    });
-    assert.equal(r.ok, true);
-    if (r.ok) {
-      assert.equal(r.result.parallel, false);
-      assert.equal(r.result.branches.length, 2);
-      assert.equal(r.result.worktrees, null);
-    }
-  } finally {
-    rmTmp(dir);
-  }
-});
-
 test("listTimeline: seeded repo returns expected structure", () => {
   const dir = mkTmpRepo();
   try {
@@ -307,27 +254,6 @@ test("listTimeline: selectedPath shrinks after checking out an earlier commit", 
   }
 });
 
-test("unmarkCheckpoint: deletes canonical step tags at sha, leaves others alone", () => {
-  const dir = mkTmpRepo();
-  try {
-    const sha = mkStepCommit(dir, "plan", 1, "plan.md");
-    // Promote the canonical step tag.
-    promoteToCheckpoint(dir, "checkpoint/cycle-1-after-plan", sha);
-    // Add an unrelated checkpoint/done-* tag at the same sha — must NOT be deleted.
-    execSync(`git tag checkpoint/done-abcdef ${sha}`, { cwd: dir });
-
-    const r = unmarkCheckpoint(dir, sha);
-    assert.equal(r.ok, true);
-    if (r.ok) {
-      assert.deepEqual(r.deleted, ["checkpoint/cycle-1-after-plan"]);
-    }
-    const remaining = execSync("git tag --list", { cwd: dir, encoding: "utf-8" }).trim().split("\n").sort();
-    assert.deepEqual(remaining, ["checkpoint/done-abcdef"]);
-  } finally {
-    rmTmp(dir);
-  }
-});
-
 test("unselect: switches HEAD to main and deletes the selected-* branch", () => {
   const dir = mkTmpRepo();
   try {
@@ -377,18 +303,6 @@ test("unselect: prefers main/master over dex/* when both contain the SHA", () =>
   }
 });
 
-test("unmarkCheckpoint: no canonical tags → no-op success", () => {
-  const dir = mkTmpRepo();
-  try {
-    const sha = mkStepCommit(dir, "plan", 1, "plan.md");
-    const r = unmarkCheckpoint(dir, sha);
-    assert.equal(r.ok, true);
-    if (r.ok) assert.deepEqual(r.deleted, []);
-  } finally {
-    rmTmp(dir);
-  }
-});
-
 test("listTimeline: surfaces step-commits from a sibling branch", () => {
   const dir = mkTmpRepo();
   try {
@@ -412,39 +326,3 @@ test("listTimeline: surfaces step-commits from a sibling branch", () => {
   }
 });
 
-test("variant group file: write → read → delete round-trip", () => {
-  const dir = mkTmpRepo();
-  try {
-    const group = {
-      groupId: "00000000-0000-0000-0000-000000000000",
-      fromCheckpoint: "checkpoint/cycle-1-after-tasks",
-      step: "plan" as StepType,
-      parallel: true,
-      createdAt: new Date().toISOString(),
-      variants: [
-        {
-          letter: "a",
-          branch: "attempt-20260417T182301-a",
-          worktree: ".dex/worktrees/attempt-20260417T182301-a",
-          status: "pending" as const,
-          runId: null,
-          candidateSha: null,
-          errorMessage: null,
-        },
-      ],
-      resolved: { kind: null, pickedLetter: null, resolvedAt: null },
-    };
-    writeVariantGroupFile(dir, group);
-    const read = readVariantGroupFile(dir, group.groupId);
-    assert.deepEqual(read, group);
-
-    const pending = readPendingVariantGroups(dir);
-    assert.equal(pending.length, 1);
-
-    deleteVariantGroupFile(dir, group.groupId);
-    assert.equal(readVariantGroupFile(dir, group.groupId), null);
-    assert.equal(readPendingVariantGroups(dir).length, 0);
-  } finally {
-    rmTmp(dir);
-  }
-});

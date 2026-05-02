@@ -1,12 +1,12 @@
 /**
- * What: 010 click-to-jump core (jumpTo) plus its cleanup verbs (unselect, unmarkCheckpoint) and the auto-prune helper for transient `selected-<ts>` navigation forks.
- * Not: Does not promote (that's recordMode.ts), does not spawn variants (that's variants.ts), does not list the timeline (that's timeline.ts).
- * Deps: _helpers (gitExec, safeExec, log), tags.ts (attemptBranchName, selectedBranchName, parseCheckpointTag), node:child_process (raw execSync for porcelain status).
+ * What: 010 click-to-jump core (jumpTo) plus its cleanup verb (unselect) and the auto-prune helper for transient `selected-<ts>` navigation forks.
+ * Not: Does not promote (that's recordMode.ts), does not list the timeline (that's timeline.ts).
+ * Deps: _helpers (gitExec, safeExec, log), tags.ts (attemptBranchName, selectedBranchName), node:child_process (raw execSync for porcelain status).
  */
 
 import { execSync } from "node:child_process";
 import { gitExec, safeExec, log, type RunLoggerLike } from "./_helpers.js";
-import { attemptBranchName, parseCheckpointTag, selectedBranchName } from "./tags.js";
+import { attemptBranchName, selectedBranchName } from "./tags.js";
 
 // ── Unselect (010 — drop a `selected-*` navigation fork) ──────
 
@@ -50,39 +50,6 @@ export function unselect(
     gitExec(`git branch -D ${branchName}`, projectDir);
     log(rlog, "INFO", `unselect: deleted ${branchName}${switchedTo ? ` (switched to ${switchedTo})` : ""}`);
     return { ok: true, switchedTo, deleted: branchName };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
-}
-
-// ── Unmark kept (010 right-click verb) ───────────────────
-
-/**
- * Delete every canonical step-commit checkpoint tag (matching the
- * `checkpoint/[cycle-N-]after-<step>` shape) that points at `sha`. System
- * tags like `checkpoint/done-*` are left alone — those mark whole-run
- * lifecycle, not individual stages.
- */
-export function unmarkCheckpoint(
-  projectDir: string,
-  sha: string,
-  rlog?: RunLoggerLike,
-): { ok: true; deleted: string[] } | { ok: false; error: string } {
-  try {
-    const tagsRaw = gitExec(`git tag --points-at ${sha}`, projectDir);
-    const tags = tagsRaw.split("\n").filter(Boolean);
-    const canonical = tags.filter((t) => parseCheckpointTag(t) !== null);
-    const deleted: string[] = [];
-    for (const tag of canonical) {
-      try {
-        gitExec(`git tag -d ${tag}`, projectDir);
-        deleted.push(tag);
-      } catch (err) {
-        log(rlog, "WARN", `unmarkCheckpoint: failed to delete ${tag}: ${String(err)}`);
-      }
-    }
-    log(rlog, "INFO", `unmarkCheckpoint: ${sha.slice(0, 7)} deleted=${deleted.length}`);
-    return { ok: true, deleted };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

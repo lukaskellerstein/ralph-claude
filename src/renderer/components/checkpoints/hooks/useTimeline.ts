@@ -55,9 +55,9 @@ export function useTimeline(projectDir: string | null): {
 
   // Invalidate on orchestrator events. The set below covers run-start (so the
   // new branch shows up as soon as its first commit lands), per-step lifecycle
-  // (started → completed), checkpoint commits (`step_candidate`), promotions,
-  // and variant-group completion. Refresh is debounced to ~the round-trip of
-  // `listTimeline`, which is fast (~tens of ms on a typical repo).
+  // (started → completed), checkpoint commits (`step_candidate`), and
+  // promotions. Refresh is debounced to ~the round-trip of `listTimeline`,
+  // which is fast (~tens of ms on a typical repo).
   useEffect(() => {
     if (!projectDir) return;
     const off = orchestratorService.subscribeEvents((e) => {
@@ -67,8 +67,7 @@ export function useTimeline(projectDir: string | null): {
         type === "step_started" ||
         type === "step_completed" ||
         type === "step_candidate" ||
-        type === "checkpoint_promoted" ||
-        type === "variant_group_complete"
+        type === "checkpoint_promoted"
       ) {
         refresh();
       }
